@@ -1,0 +1,47 @@
+name: Cross-platform builds
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: Swatinem/rust-cache@v2
+      - name: Ubuntu native prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
+      - run: cargo test --locked -p trace-gateway-cli
+      - name: Gateway tests
+        run: node --test gateway/test/*.test.mjs
+        shell: bash
+      - name: Build CLI and prepare sidecar
+        run: python scripts/package.py
+      - name: CLI end-to-end
+        run: python tests/cli_smoke.py
+      - name: Install Tauri bundler
+        run: npm install -g @tauri-apps/cli@2
+      - name: Native desktop installers
+        working-directory: desktop
+        run: tauri build
+        env:
+          NO_STRIP: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trace-gateway-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            target/release/bundle/

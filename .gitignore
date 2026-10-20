@@ -1,0 +1,17 @@
+/target/
+/dist/
+/runtime/*
+!/runtime/README.md
+/desktop/binaries/trace-*
+*.log
+/.cargo/config.toml
+
+# Local state and generated files
+/desktop/gen/
+**/__pycache__/
+.DS_Store
+.env
+.env.*
+/data/
+/control.token
+/instance.json
