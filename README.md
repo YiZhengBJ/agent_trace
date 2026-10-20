@@ -118,12 +118,29 @@ python scripts/package.py --node /path/to/node --native-macos-bundle
 
 在 [GitHub Actions](https://github.com/YiZhengBJ/agent_trace/actions/workflows/build.yml) 选择 **Cross-platform builds → Run workflow → main → Run workflow**。完成后进入该次运行的 **Artifacts** 下载（保留 30 天）：
 
-| 产物 | 桌面安装程序 | 无桌面 CLI（自带 Node.js） |
-|---|---|---|
-| `trace-gateway-ubuntu-x64` | `.deb`、`.AppImage` | `.tar.gz` |
-| `trace-gateway-macos-arm64` | `.dmg`（Apple Silicon） | `.tar.gz` |
-| `trace-gateway-windows-x64` | `.msi`、`-setup.exe` | `.zip` |
+每个平台只发布一个统一包，包含桌面安装程序、CLI、内置 Node.js 和安装脚本：
 
-每份产物附带 `SHA256SUMS.txt`。缺失任一预期安装程序会导致构建失败；此流程仅上传 Actions Artifacts，不自动发布 GitHub Release。CLI 包解压后运行 `trace`（Windows 为 `trace.exe`），保留同目录下的 `runtime` 文件夹。
+| 平台 | 统一包 | 桌面组件 |
+|---|---|---|
+| Ubuntu x64 | `trace-gateway-ubuntu-x64-unified.tar.gz` | `.deb`、`.AppImage` |
+| macOS Apple Silicon | `trace-gateway-macos-arm64-unified.tar.gz` | `.app`、`.dmg` |
+| Windows x64 | `trace-gateway-windows-x64-unified.zip` | `.msi`、NSIS 安装程序 |
+
+解压并进入包目录后安装：
+
+```sh
+# macOS / Ubuntu：自动选择模式（Linux 无显示环境时仅安装 CLI）
+sh install.sh
+# 服务器明确指定无桌面安装，不安装图形依赖
+sh install.sh --headless
+# Linux 桌面安装会通过 sudo apt-get 安装 deb 及其系统依赖
+sh install.sh --desktop
+```
+
+Windows 在 PowerShell 中运行 `./install.ps1`；仅安装 CLI 用 `./install.ps1 -Headless`。若脚本被本机策略拦截，可使用 `powershell -ExecutionPolicy Bypass -File ./install.ps1`。桌面模式会打开原生安装向导。
+
+安装不需要 Node.js、Rust 或 Python，也不会下载 Node.js。CLI 的 `runtime` 随包安装；桌面程序也携带自己的运行时，允许两种入口独立运行。macOS 应用安装到 `~/Applications`，Unix CLI 安装到 `~/.local/share/trace-gateway-app` 并链接到 `~/.local/bin/trace`（未在 PATH 中时脚本会提示）；Windows CLI 安装到 `%LOCALAPPDATA%/TraceGatewayApp` 并加入用户 PATH，新终端生效。安装不会自动启用开机启动。已有网关请先 `trace stop` 再升级，轨迹数据目录独立于程序安装目录。
+
+每个包内附带文件校验清单 `SHA256SUMS.txt`。缺失任一预期桌面安装程序会导致构建失败；此流程仅上传 Actions Artifacts，不自动发布 GitHub Release。
 
 本地 macOS 包使用 ad-hoc 签名，仅供预览与内部分发，不等于 Apple Developer ID 签名和公证。公开分发前需要配置开发者证书/公证；Windows 代码签名同理。Ubuntu 和 Windows 包必须在对应 runner 构建并验证，不将源码或 CI 配置冒充已生成的安装包。

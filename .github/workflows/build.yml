@@ -69,14 +69,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/installers/*
-            dist/SHA256SUMS.txt
+          path: dist/release/*
       - name: Build summary
         shell: bash
         run: |
           echo '### ${{ matrix.name }}' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Download the CLI archive and desktop installers from this run’s Artifacts (30-day retention).' >> "$GITHUB_STEP_SUMMARY"
-          echo 'SHA256SUMS.txt contains checksums. CLI archives include Node.js; no separate runtime installation is required.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the unified package (desktop + CLI + bundled Node.js) from this run’s Artifacts (30-day retention).' >> "$GITHUB_STEP_SUMMARY"
+          echo 'SHA256SUMS.txt contains checksums. Unified packages include Node.js; no separate runtime installation is required.' >> "$GITHUB_STEP_SUMMARY"

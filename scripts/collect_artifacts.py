@@ -4,6 +4,8 @@ import argparse
 import hashlib
 from pathlib import Path
 import shutil
+import tarfile
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PATTERNS = {
@@ -15,20 +17,32 @@ PATTERNS = {
 def collect(root, platform):
     dist = root / "dist"
     bundle = root / "target/release/bundle"
-    installers = dist / "installers"
-    installers.mkdir(parents=True, exist_ok=True)
-    archives = sorted(dist.glob("*.tar.gz")) + sorted(dist.glob("*.zip"))
-    if not archives:
-        raise RuntimeError("No headless CLI archive was produced")
-    files = list(archives)
+    release = dist / ("trace-gateway-" + platform + "-unified")
+    if release.exists():
+        shutil.rmtree(release)
+    release.mkdir(parents=True)
+    portable = [p for p in dist.glob("trace-gateway-*") if p.is_dir() and not p.name.endswith("-unified")]
+    if len(portable) != 1:
+        raise RuntimeError("Expected exactly one prepared CLI directory")
+    shutil.copytree(portable[0], release / "cli")
+    desktop = release / "desktop"
+    desktop.mkdir()
     for pattern in PATTERNS[platform]:
         matches = sorted(bundle.glob(pattern))
         if not matches:
             raise RuntimeError(f"Missing required installer: {bundle / pattern}")
         for source in matches:
-            target = installers / source.name
-            shutil.copy2(source, target)
-            files.append(target)
+            shutil.copy2(source, desktop / source.name)
+    if platform == "macos-arm64":
+        apps = list((bundle / "macos").glob("*.app"))
+        if len(apps) != 1:
+            raise RuntimeError("Expected one macOS app bundle")
+        shutil.copytree(apps[0], desktop / "Trace Gateway.app", symlinks=True)
+    shutil.copy2(root / "README.md", release / "README.md")
+    script = "install.ps1" if platform == "windows-x64" else "install.sh"
+    shutil.copy2(root / "scripts/installers" / script, release / script)
+    (release / script).chmod(0o755)
+    files = sorted(p for p in release.rglob("*") if p.is_file() and not p.is_symlink())
     lines = []
     for path in files:
         with path.open("rb") as stream:
@@ -36,8 +50,21 @@ def collect(root, platform):
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 hasher.update(chunk)
             digest = hasher.hexdigest()
-        lines.append(f"{digest}  {path.relative_to(dist).as_posix()}\n")
-    (dist / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8")
+        lines.append(f"{digest}  {path.relative_to(release).as_posix()}\n")
+    (release / "SHA256SUMS.txt").write_text("".join(lines), encoding="utf-8")
+    final = dist / "release"
+    final.mkdir(exist_ok=True)
+    if platform == "windows-x64":
+        archive = final / (release.name + ".zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+            for path in release.rglob("*"):
+                if path.is_file():
+                    output.write(path, path.relative_to(dist))
+    else:
+        archive = final / (release.name + ".tar.gz")
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(release, arcname=release.name)
+    print("Unified package:", archive)
     print("Verified artifacts:\n" + "".join(lines))
 
 if __name__ == "__main__":
