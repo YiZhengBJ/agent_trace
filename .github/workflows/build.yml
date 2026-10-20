@@ -71,7 +71,7 @@ jobs:
         run: npm install -g @tauri-apps/cli@2
       - name: Native desktop installers
         working-directory: desktop
-        run: tauri build --bundles ${{ matrix.bundles }} --ci
+        run: tauri build --bundles "${{ matrix.bundles }}" --ci
         env:
           NO_STRIP: 'true'
           APPIMAGE_EXTRACT_AND_RUN: '1'
