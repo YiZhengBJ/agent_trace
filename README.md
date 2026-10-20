@@ -114,6 +114,16 @@ python scripts/package.py --node /path/to/node --native-macos-bundle
 
 原生安装器（需要 Tauri CLI 2）用 `python scripts/package.py --desktop`，或在准备 sidecar 后 `cd desktop && tauri build`。Ubuntu 构建依赖 WebKitGTK 4.1 / Ayatana AppIndicator；Windows 需要 MSVC Build Tools / WebView2；参考 [Tauri 官方前置要求](https://v2.tauri.app/start/prerequisites/)。
 
-`.github/workflows/build.yml` 提供 Ubuntu 22.04、macOS 14、Windows 2022 原生矩阵构建：CLI 归档、macOS app/dmg、Ubuntu deb/AppImage、Windows MSI/NSIS，实际生成类型由平台及 Tauri bundler 决定。不会上传用户数据。将源码推送到自己的仓库后手动运行 workflow，或打版本标签触发。
+`.github/workflows/build.yml` 在推送代码到 `main`、向 `main` 提交 PR、推送 `v*` 标签时自动构建，也可手动触发。三个任务独立运行，先执行 Rust / 网关测试和 CLI 端到端测试，再打包桌面应用。不会上传用户数据。
+
+在 [GitHub Actions](https://github.com/YiZhengBJ/agent_trace/actions/workflows/build.yml) 选择 **Cross-platform builds → Run workflow → main → Run workflow**。完成后进入该次运行的 **Artifacts** 下载（保留 30 天）：
+
+| 产物 | 桌面安装程序 | 无桌面 CLI（自带 Node.js） |
+|---|---|---|
+| `trace-gateway-ubuntu-x64` | `.deb`、`.AppImage` | `.tar.gz` |
+| `trace-gateway-macos-arm64` | `.dmg`（Apple Silicon） | `.tar.gz` |
+| `trace-gateway-windows-x64` | `.msi`、`-setup.exe` | `.zip` |
+
+每份产物附带 `SHA256SUMS.txt`。缺失任一预期安装程序会导致构建失败；此流程仅上传 Actions Artifacts，不自动发布 GitHub Release。CLI 包解压后运行 `trace`（Windows 为 `trace.exe`），保留同目录下的 `runtime` 文件夹。
 
 本地 macOS 包使用 ad-hoc 签名，仅供预览与内部分发，不等于 Apple Developer ID 签名和公证。公开分发前需要配置开发者证书/公证；Windows 代码签名同理。Ubuntu 和 Windows 包必须在对应 runner 构建并验证，不将源码或 CI 配置冒充已生成的安装包。

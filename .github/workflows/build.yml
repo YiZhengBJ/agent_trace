@@ -2,15 +2,34 @@ name: Cross-platform builds
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
+    paths-ignore: ['**.md']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md']
 permissions:
   contents: read
+concurrency:
+  group: builds-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
+    name: ${{ matrix.name }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-2022]
+        include:
+          - os: ubuntu-22.04
+            name: ubuntu-x64
+            bundles: deb,appimage
+          - os: macos-14
+            name: macos-arm64
+            bundles: app,dmg
+          - os: windows-2022
+            name: windows-x64
+            bundles: msi,nsis
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -18,15 +37,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: Swatinem/rust-cache@v2
       - name: Ubuntu native prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
-      - run: cargo test --locked -p trace-gateway-cli
+      - name: Rust tests
+        run: cargo test --locked -p trace-gateway-cli
       - name: Gateway tests
         run: node --test gateway/test/*.test.mjs
         shell: bash
-      - name: Build CLI and prepare sidecar
+      - name: Build CLI and prepare bundled Node runtime
         run: python scripts/package.py
       - name: CLI end-to-end
         run: python tests/cli_smoke.py
@@ -34,14 +57,26 @@ jobs:
         run: npm install -g @tauri-apps/cli@2
       - name: Native desktop installers
         working-directory: desktop
-        run: tauri build
+        run: tauri build --bundles ${{ matrix.bundles }} --ci
         env:
-          NO_STRIP: true
+          NO_STRIP: 'true'
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+      - name: Verify installers and generate checksums
+        run: python scripts/collect_artifacts.py --platform ${{ matrix.name }}
       - uses: actions/upload-artifact@v4
         with:
-          name: trace-gateway-${{ matrix.os }}
+          name: trace-gateway-${{ matrix.name }}
           if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
           path: |
             dist/*.tar.gz
             dist/*.zip
-            target/release/bundle/
+            dist/installers/*
+            dist/SHA256SUMS.txt
+      - name: Build summary
+        shell: bash
+        run: |
+          echo '### ${{ matrix.name }}' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the CLI archive and desktop installers from this run’s Artifacts (30-day retention).' >> "$GITHUB_STEP_SUMMARY"
+          echo 'SHA256SUMS.txt contains checksums. CLI archives include Node.js; no separate runtime installation is required.' >> "$GITHUB_STEP_SUMMARY"
