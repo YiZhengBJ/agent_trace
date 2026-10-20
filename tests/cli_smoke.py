@@ -13,7 +13,17 @@ class Mock(http.server.BaseHTTPRequestHandler):
   self.wfile.write(b'data: [DONE]\n\n')
  def log_message(self,*a):pass
 with tempfile.TemporaryDirectory(prefix='trace-cli-')as temp:
- home=pathlib.Path(temp)/'home';s=socket.socket();s.bind(('127.0.0.1',0));port=s.getsockname()[1];s.close();upstream=http.server.ThreadingHTTPServer(('127.0.0.1',0),Mock);threading.Thread(target=upstream.serve_forever,daemon=True).start()
+ home=pathlib.Path(temp)/'long gateway home with spaces';home.mkdir()
+ if os.name=='nt':
+  # Reproduce runner TEMP aliases (RUNNER~1) instead of relying on its spelling.
+  import ctypes
+  from ctypes import wintypes
+  short_path=ctypes.WinDLL('kernel32',use_last_error=True).GetShortPathNameW
+  short_path.argtypes=[wintypes.LPCWSTR,wintypes.LPWSTR,wintypes.DWORD];short_path.restype=wintypes.DWORD
+  buffer=ctypes.create_unicode_buffer(32768);length=short_path(str(home),buffer,len(buffer))
+  if not length or length>=len(buffer):raise ctypes.WinError(ctypes.get_last_error())
+  home=pathlib.Path(buffer.value)
+ s=socket.socket();s.bind(('127.0.0.1',0));port=s.getsockname()[1];s.close();upstream=http.server.ThreadingHTTPServer(('127.0.0.1',0),Mock);threading.Thread(target=upstream.serve_forever,daemon=True).start()
  prefix=[str(BIN),'--home',str(home),'--port',str(port),'--runtime-dir',str(ROOT/'runtime'),'--json']
  def cli(*args):return json.loads(subprocess.check_output(prefix+list(args),text=True,timeout=25))
  try:

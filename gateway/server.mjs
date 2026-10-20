@@ -163,7 +163,11 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
   if(seed&&records.size===0)await demo();
   return {server,base,flush:()=>pending,close:async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));await pending;agents.http.destroy();agents.https.destroy();}};
 }
-if(process.argv[1]&&(await realpath(process.argv[1]).catch(()=>path.resolve(process.argv[1])))===fileURLToPath(import.meta.url)){
+// Canonicalize both sides: Windows 8.3 paths and junctions can spell the
+// entry script differently from import.meta.url. A false negative exits 0
+// without ever starting the listener, including when launched by the Rust CLI.
+const canonicalPath=async value=>realpath(value).catch(()=>path.resolve(value));
+if(process.argv[1]&&(await canonicalPath(process.argv[1]))===(await canonicalPath(fileURLToPath(import.meta.url)))){
  const app=await createGateway();console.log(`Trace Gateway running at ${app.base}`);
  let closing=false;const shutdown=()=>{if(closing)return;closing=true;app.close().then(()=>process.exit());};
  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,shutdown);
