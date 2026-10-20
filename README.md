@@ -141,6 +141,28 @@ Windows 在 PowerShell 中运行 `./install.ps1`；仅安装 CLI 用 `./install.
 
 安装不需要 Node.js、Rust 或 Python，也不会下载 Node.js。CLI 的 `runtime` 随包安装；桌面程序也携带自己的运行时，允许两种入口独立运行。macOS 应用安装到 `~/Applications`，Unix CLI 安装到 `~/.local/share/trace-gateway-app` 并链接到 `~/.local/bin/trace`（未在 PATH 中时脚本会提示）；Windows CLI 安装到 `%LOCALAPPDATA%/TraceGatewayApp` 并加入用户 PATH，新终端生效。安装不会自动启用开机启动。已有网关请先 `trace stop` 再升级，轨迹数据目录独立于程序安装目录。
 
+### 卸载
+
+统一安装脚本会同时安装卸载命令；无需保留下载包，也不需要 Node.js 或 Python：
+
+```sh
+# macOS / Ubuntu：先从托盘退出桌面应用
+trace-uninstall
+# 可选：同时永久删除当前 TRACE_HOME（未指定时为默认目录）的配置和轨迹
+trace-uninstall --purge-data
+```
+
+```powershell
+# Windows：先从托盘退出桌面应用
+trace-uninstall
+# 可选：同时永久删除当前数据目录
+trace-uninstall -PurgeData
+```
+
+若 Unix 的 `~/.local/bin` 未加入 PATH，可直接运行 `~/.local/bin/trace-uninstall`。Windows PATH 尚未刷新时，在 PowerShell 使用 `& "$env:LOCALAPPDATA\TraceGatewayApp\trace-uninstall.cmd"`。
+
+卸载会停止当前数据目录的网关，移除本用户的开机启动项、CLI、内置运行时和安装脚本注册的桌面组件。Ubuntu 移除 deb 需要 sudo，不会自动删除其他系统共享依赖。Windows 桌面组件调用原生卸载向导；也可从系统“已安装的应用”单独卸载桌面部分，再执行 `trace-uninstall` 清理 CLI。默认保留 Provider 配置和轨迹，不删除其他自定义数据目录；使用过多个 `--home` 时应先逐个停止，数据由用户单独处理。卸载脚本遇到仍在运行的托盘或清理失败会报错并保留剩余文件，修正后可重试。仅直接运行 `.dmg`/`.deb`/`.msi` 等原生安装器、未运行统一安装脚本时，使用相应系统卸载方式。
+
 每个包内附带文件校验清单 `SHA256SUMS.txt`。缺失任一预期桌面安装程序会导致构建失败；此流程仅上传 Actions Artifacts，不自动发布 GitHub Release。
 
 本地 macOS 包使用 ad-hoc 签名，仅供预览与内部分发，不等于 Apple Developer ID 签名和公证。公开分发前需要配置开发者证书/公证；Windows 代码签名同理。Ubuntu 和 Windows 包必须在对应 runner 构建并验证，不将源码或 CI 配置冒充已生成的安装包。

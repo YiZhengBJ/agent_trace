@@ -42,6 +42,9 @@ def collect(root, platform):
     script = "install.ps1" if platform == "windows-x64" else "install.sh"
     shutil.copy2(root / "scripts/installers" / script, release / script)
     (release / script).chmod(0o755)
+    uninstaller = "uninstall.ps1" if platform == "windows-x64" else "uninstall.sh"
+    shutil.copy2(root / "scripts/installers" / uninstaller, release / uninstaller)
+    (release / uninstaller).chmod(0o755)
     files = sorted(p for p in release.rglob("*") if p.is_file() and not p.is_symlink())
     lines = []
     for path in files:

@@ -53,6 +53,19 @@ jobs:
         run: python scripts/package.py
       - name: CLI end-to-end
         run: python tests/cli_smoke.py
+      - name: Installer round-trip tests (Unix)
+        if: runner.os != 'Windows'
+        run: python tests/installer_smoke.py
+      - name: PowerShell installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem scripts/installers/*.ps1 | ForEach-Object {
+            $parseErrors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+          }
       - name: Install Tauri bundler
         run: npm install -g @tauri-apps/cli@2
       - name: Native desktop installers
