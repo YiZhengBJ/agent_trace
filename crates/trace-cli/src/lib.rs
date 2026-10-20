@@ -17,6 +17,32 @@ use std::{
     time::Duration,
 };
 
+// Windows may inherit caller-owned pipe handles even when child stdio is
+// redirected. A detached daemon must not keep a shell/CI capture pipe alive.
+#[cfg(windows)]
+fn detach_caller_pipes() -> Result<()> {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(kind: u32) -> *mut c_void;
+        fn GetFileType(handle: *mut c_void) -> u32;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    for kind in [-10_i32, -11, -12] {
+        // These are process-owned standard handles; no ownership is transferred.
+        unsafe {
+            let handle = GetStdHandle(kind as u32);
+            if !handle.is_null() && handle as isize != -1 && GetFileType(handle) == 3 {
+                if SetHandleInformation(handle, 1, 0) == 0 {
+                    return Err(std::io::Error::last_os_error())
+                        .context("Cannot detach caller's standard pipe");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -293,6 +319,8 @@ impl Runtime {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000 | 0x00000200);
         }
+        #[cfg(windows)]
+        detach_caller_pipes()?;
         let mut child = cmd.spawn()?;
         for _ in 0..120 {
             if self.running() {

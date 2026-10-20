@@ -52,7 +52,8 @@ jobs:
       - name: Build CLI and prepare bundled Node runtime
         run: python scripts/package.py
       - name: CLI end-to-end
-        run: python tests/cli_smoke.py
+        timeout-minutes: 5
+        run: python -u tests/cli_smoke.py
       - name: Installer round-trip tests (Unix)
         if: runner.os != 'Windows'
         run: python tests/installer_smoke.py
