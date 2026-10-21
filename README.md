@@ -68,6 +68,94 @@ trace start
 
 目标必须为空，避免覆盖。导入保留 Provider ID、本地路径和 Session；启动时对历史记录重新脱敏。
 
+## 可选：工具调用前文件备份
+
+```sh
+trace backup enable    # 开启文件备份
+trace backup disable   # 关闭，不删除已有快照
+trace backup status    # 查看开关、配置路径和网关运行状态
+```
+
+与 GUI 共用同一配置，运行中修改立即用于后续请求，无需重启；停止状态也能设置，下次启动生效。
+支持全局 `--home`、`--port`、`--json` 和自定义配置文件环境变量 `TRACE_FILE_BACKUP_CONFIG`。
+
+
+控制台左侧点击 **设置**，设置启用开关和资源上限，修改后自动保存并立即用于后续请求，无需重启。“工具匹配规则”中可编辑 JSON，或一键补充 DSH 的小写 `read` / `write` / `edit` 规则，自动保存。不需要配置工作目录，工具涉及且网关进程有权限读取的文件均可备份。
+
+默认关闭，不需要修改 Harness。网关首次启动会在 `<TRACE_HOME>/data/file-backup.json`
+生成配置（macOS 默认是 `~/Library/Application Support/trace-gateway/data/file-backup.json`）。
+在该文件中设置 `enabled: true` 即可开启。文件必须位于网关可访问的文件系统中，
+不限制项目或 Session。旧配置的 `workspaceRoot` 被忽略，保存设置后移除。
+绝对工具路径直接访问；相对路径使用工具参数或当前请求中明确提供的 cwd / Harness
+环境上下文解析，无法确定时记录 `relative_path_unresolved`，不猜测网关自身工作目录。
+
+完整默认模板见 [gateway/file-backup.example.json](gateway/file-backup.example.json)。也可在启动网关前设置
+`TRACE_FILE_BACKUP_CONFIG=/absolute/path/file-backup.json` 使用另一份配置。Rust CLI/daemon
+继承此环境变量；登录服务需在其环境中设置，通常直接编辑默认数据目录中的文件更方便。
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "maxFileBytes": 8388608,
+  "maxFilesPerResponse": 64,
+  "maxResponseBytes": 33554432,
+  "rules": [
+    {
+      "id": "read-file",
+      "operation": "read",
+      "toolNames": ["Read", "read_file"],
+      "pathFields": ["file_path", "path"]
+    },
+    {
+      "id": "edit-file",
+      "operation": "write",
+      "namePattern": "^(Write|Edit|MultiEdit|write_file|edit_file)$",
+      "pathFields": ["file_path", "path", "edits.*.path"]
+    }
+  ]
+}
+```
+
+`toolNames` 是区分大小写的精确匹配，`namePattern` 是 JavaScript 正则，两者取或；
+建议正则使用 `^` / `$` 限定名称。`pathFields` 是参数对象内的点分路径，`*` 遍历一层，
+末端数组也会展开。它们只匹配工具名称并提取路径，不执行代码、shell 或任意 JSONPath。
+规则 ID 唯一，`operation` 为 `read` / `write`，两者均保存执行前文件。
+
+配置每次请求前按文件元数据检查更新，不需重启；当前响应使用请求开始时固定的配置。
+建议先写临时文件再原子替换，避免编辑过程中出现半份 JSON。无效配置在启动时报错，
+运行中返回 503，不会静默绕过。未来可由 RSI 写入同一规则文件；本版不包含自动生成规则。
+
+### 捕获、关联与存储
+
+- 支持 OpenAI Chat Completions、Anthropic Messages、Responses 的常见 JSON/SSE
+  function/tool-use 结构，包含流式参数拼接；不从普通文本或 shell 命令猜测文件操作。
+- 开启后，SSE 普通文本帧继续转发；从首个结构化工具帧起，后续原始字节暂存到磁盘。
+  等该响应结束、参数齐全且文件备份及 manifest 完成后，再按原始字节释放，避免
+  Harness 在备份前执行工具。非流式响应也在完成备份后放行。开启时工具帧之后的文本
+  同样延后，不承诺零延迟；关闭时沿用原始流透传。
+- 按文件串行、64 KiB 缓冲区复制，不把文件内容整体读入内存；同一用户 query 下跨多轮工具调用的同一文件
+  只在首次出现时备份，后续读写复用首次快照；新文件单独备份，新 query 重新开始。首次
+  目标不存在也会复用该状态。重复引用不占额外文件数限制，失败的捕获允许后续重试。工具参数累计上限 2 MiB、未闭合 SSE 帧上限 2 MiB；
+  响应暂存上限由 `maxResponseBytes` 限制。非流式 JSON 解析仍有此上限内的内存开销。
+- 每条请求记录新增 `fileBackup`，包含配置哈希、文件状态、原工具 ID、规则 ID、
+  备份相对路径和耗时，并记录 query ID。复用项带 `reused: true` 和首次请求的
+  `sourceRecordId`，指向原备份文件，不再生成副本；重启时从历史记录恢复。对应文件位于
+  `<TRACE_HOME>/data/file-backups/<record-id>/*.bin`，`manifest.json` 保存关联。
+  备份保存**原始文件内容，不做文本脱敏**；API 的 JSON 导出只含引用，不打包文件。
+  Unix 上目录 0700、文件 0600；原文件权限作为元数据记录，源文件不修改。
+- 已存在的普通文件记为 `saved`；不存在的目标记为 `absent`（新文件写入前状态）；
+  目录、超限、权限不足、无法解析的相对路径、无路径、参数错误、复制失败均有显式状态。符号链接指向的文件有读取权限即可备份；
+  备份目录自身不参与备份，避免递归。仅保存文件，不递归备份目录。
+- 未匹配的结构化工具名和 ID 写入 `unmatchedTools`，便于后续补充规则；只要存在
+  未覆盖工具或文件失败，整体标为 `partial`。文件备份失败会记录原因并继续放行，
+  不等于备份成功；响应解析/缓冲超限、断连会终止当前响应并清理临时文件。
+
+本功能记录“模型建议执行工具前”的文件状态，不能确认工具真的执行过，也不防止其他进程
+并发修改文件；复制时检测到变化会标记失败。Bash、动态脚本、目录操作和未识别协议
+不在首版完整回放保证内，不应把部分采集样本当作完整环境快照。备份目前不自动清理，
+清理历史轨迹时需按整个 query 及引用关系处理，不应删除仍被其他轮次引用的首次快照。
+
 ## 托盘应用
 
 启动 `Trace Gateway.app` / `trace-desktop` / Windows 安装的 Trace Gateway：默认不弹出窗口，只显示托盘图标，并启动后台网关。

@@ -1,6 +1,8 @@
 import http from 'node:http';
 import {SessionMatcher} from './session-matcher.mjs';
 import {redact,captureSecrets} from './redaction.mjs';
+import {createFileBackup,QueryTracker} from './file-backup.mjs';
+import {forwardWithBackups} from './tool-call-capture.mjs';
 import https from 'node:https';
 import {randomUUID} from 'node:crypto';
 import {mkdir, readFile, writeFile, rename, readdir, realpath} from 'node:fs/promises';
@@ -25,6 +27,7 @@ const userText = payload => {
 };
 export async function createGateway({port=Number(process.env.PORT||4317),dataDir=process.env.DATA_DIR||path.join(ROOT,'data'),seed=process.env.TRACE_SEED_DEMO==='1'}={}) {
   await mkdir(path.join(dataDir,'records'),{recursive:true,mode:0o700});
+  const fileBackup=await createFileBackup({dataDir});
   let providers=[];try{providers=JSON.parse(await readFile(path.join(dataDir,'providers.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
   const knownSecrets=new Set(),sessionMatcher=new SessionMatcher();
   const records=new Map(), responseSessions=new Map();
@@ -38,11 +41,15 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
     await queue(()=>writeFile(path.join(dataDir,'records',record.id+'.json'),snapshot,{mode:0o600}));
   }
   for(const f of await readdir(path.join(dataDir,'records'))){if(f.endsWith('.json')){try{const original=await readFile(path.join(dataDir,'records',f),'utf8');const r=redact(JSON.parse(original),knownSecrets);records.set(r.id,r);if(JSON.stringify(r)!==original){const dest=path.join(dataDir,'records',f);await writeFile(dest+'.tmp',JSON.stringify(r),{mode:0o600});await rename(dest+'.tmp',dest);}}catch(e){diskError=`Unreadable record: ${f}`;}}}
-  for(const r of [...records.values()].sort((a,b)=>a.startedAt.localeCompare(b.startedAt))){
+  const queryTracker=new QueryTracker();
+  const chronologicalRecords=[...records.values()].sort((a,b)=>a.startedAt.localeCompare(b.startedAt));
+  for(const r of chronologicalRecords){
+    queryTracker.assign(r);
     sessionMatcher.add(r);
     const data=parse(Buffer.from(r.response||''));if(data?.id)responseSessions.set(`${r.providerId}:${data.id}`,r.sessionId);
     if(r.stream)for(const line of (r.response||'').split('\n'))if(line.startsWith('data: ')){const event=parse(Buffer.from(line.slice(6)));if(event?.response?.id)responseSessions.set(`${r.providerId}:${event.response.id}`,r.sessionId);}
   }
+  fileBackup.restore(chronologicalRecords);
   const agents={http:new http.Agent({keepAlive:true,maxSockets:256}),https:new https.Agent({keepAlive:true,maxSockets:256})};
   let base='';
   function sessionFor(req,p,payload){
@@ -55,6 +62,8 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
     return {id:`${p.id}:${randomUUID()}`,method:match?.ambiguous?'ambiguous-context':'new-session',evidence:match?.ambiguous?{reason:'multiple-matching-sessions',candidateSessionIds:match.candidates}:{reason:'no-unambiguous-continuation'}};
   }
   async function proxy(req,res,p,suffix){
+    let backupConfig;
+    try{backupConfig=await fileBackup.config();}catch(e){return json(res,503,{error:'Invalid file-backup configuration: '+e.message});}
     captureSecrets(req.headers,knownSecrets);
     const started=performance.now(),bytes=await body(req),payload=parse(bytes),session=sessionFor(req,p,payload);
     const target=new URL(p.url);target.pathname=target.pathname.replace(/\/$/,'')+'/'+suffix.replace(/^\//,'');target.search=new URL(req.url,base).search;
@@ -63,10 +72,11 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
     const headers={};const connectionTokens=new Set(String(req.headers.connection||'').split(',').map(x=>x.trim().toLowerCase()));
     for(const[k,v]of Object.entries(req.headers))if(!HOP.has(k)&&!connectionTokens.has(k)&&!['x-session-id','x-agent-session-id','x-codex-session-id','session_id','origin','referer','cookie'].includes(k))headers[k]=v;
     headers['accept-encoding']='identity';headers['content-length']=bytes.length;
-    const record={id:randomUUID(),sessionId:session.id,sessionMethod:session.method,sessionEvidence:session.evidence||null,providerId:p.id,providerName:p.name,protocol:suffix.includes('messages')?'anthropic':suffix.includes('responses')?'responses':'openai',path:suffix,model:payload?.model||'unknown',title:userText(payload).slice(0,160),startedAt:new Date().toISOString(),status:'streaming',httpStatus:null,stream:!!payload?.stream,request:payload||bytes.toString(),response:'',bytes:0,ttftMs:null,durationMs:0,truncated:false,demo:!!p.demo};
+    const record={id:randomUUID(),sessionId:session.id,sessionMethod:session.method,sessionEvidence:session.evidence||null,providerId:p.id,providerName:p.name,protocol:suffix.includes('messages')?'anthropic':suffix.includes('responses')?'responses':'openai',path:suffix,model:payload?.model||'unknown',title:userText(payload).slice(0,160),startedAt:new Date().toISOString(),status:'streaming',httpStatus:null,stream:!!payload?.stream,fileBackupEnabled:backupConfig.enabled,request:payload||bytes.toString(),response:'',bytes:0,ttftMs:null,durationMs:0,truncated:false,demo:!!p.demo};
+    queryTracker.assign(record);
     records.set(record.id,redact(record,knownSecrets));active++;
     await new Promise(resolve=>{
-      let done=false,upstream,parts=[],size=0;
+      let done=false,upstream,parts=[],size=0,guarded=false;
       const finish=(error)=>{
         if(done)return;done=true;active--;record.durationMs=Math.round((performance.now()-started)*10)/10;
         record.status=error?'error':record.httpStatus>=400?'error':'completed';if(error)record.error=error;
@@ -82,10 +92,26 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
         const tokens=new Set(String(incoming.headers.connection||'').split(',').map(x=>x.trim().toLowerCase()));
         for(const[k,v]of Object.entries(incoming.headers))if(!HOP.has(k)&&!tokens.has(k)&&k!=='set-cookie')responseHeaders[k]=v;
         res.writeHead(incoming.statusCode,{...responseHeaders,'x-trace-id':record.id,'x-trace-session-id':encodeURIComponent(record.sessionId),'x-accel-buffering':'no'});res.flushHeaders();
-        incoming.on('data',chunk=>{
+        const onChunk=chunk=>{
           if(record.ttftMs===null)record.ttftMs=Math.round((performance.now()-started)*10)/10;
           record.bytes+=chunk.length;
           if(!record.truncated&&size+chunk.length<=32*1024*1024){parts.push(chunk);size+=chunk.length;}else record.truncated=true;
+        };
+        if(backupConfig.enabled&&incoming.statusCode>=200&&incoming.statusCode<300){
+          guarded=true;
+          void (async()=>{
+            try{
+              await forwardWithBackups({incoming,res,config:backupConfig,dataDir,record,onChunk,onTools:async calls=>{
+                try{await fileBackup.capture(backupConfig,calls,record);}catch(e){record.fileBackup={enabled:true,status:'error',error:e.message,configHash:backupConfig.configHash};}
+                await persist(record);
+              }});
+              res.end();finish();
+            }catch(e){record.fileBackup={...record.fileBackup,enabled:true,status:'error',error:e.message};incoming.destroy();res.destroy();finish(e.message);}
+          })();
+          return;
+        }
+        incoming.on('data',chunk=>{
+          onChunk(chunk);
           if(!res.write(chunk)){incoming.pause();res.once('drain',()=>incoming.resume());}
         });
         incoming.on('end',()=>{res.end();finish();});
@@ -94,7 +120,7 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
       });
       upstream.setTimeout(300_000,()=>upstream.destroy(new Error('Upstream idle timeout')));
       upstream.on('error',e=>{if(!res.headersSent)json(res,502,{error:{message:e.message,type:'gateway_error'}});else res.destroy();finish(e.message);});
-      res.on('close',()=>{if(!res.writableEnded){upstream.destroy();finish('Client disconnected');}});
+      res.on('close',()=>{if(!res.writableEnded){upstream.destroy();if(!guarded)finish('Client disconnected');}});
       upstream.end(bytes);
     });
   }
@@ -109,6 +135,18 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
         if(!provider)return json(res,404,{error:'Provider not found'});
         if(!['POST','GET','DELETE'].includes(req.method))return json(res,405,{error:'Method not allowed'});
         return await proxy(req,res,provider,match[2]);
+      }
+      if(p==='/api/settings/file-backup'){
+        if(!['GET','PUT'].includes(req.method))return json(res,405,{error:'Method not allowed'});
+        if(req.method==='PUT'){
+          const localOrigin=[base,base.replace('127.0.0.1','localhost')].includes(req.headers.origin);
+          const authorized=process.env.TRACE_CONTROL_TOKEN&&req.headers['x-trace-control-token']===process.env.TRACE_CONTROL_TOKEN;
+          if(!localOrigin&&!authorized)return json(res,403,{error:'Settings changes require the local console or management token'});
+          if(!String(req.headers['content-type']||'').startsWith('application/json'))return json(res,415,{error:'JSON required'});
+          try{await fileBackup.update(parse(await body(req)));}catch(e){return json(res,400,{error:e.message});}
+        }
+        const {configHash,...config}=await fileBackup.config();
+        return json(res,200,{config,configPath:fileBackup.configPath,backupDirectory:path.join(dataDir,'file-backups')});
       }
       if(p==='/api/health')return json(res,200,{app:'trace-gateway',version:'0.2.0',instanceId:process.env.TRACE_INSTANCE_ID||null});
       if(p.startsWith('/api/admin/')){

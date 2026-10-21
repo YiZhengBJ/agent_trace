@@ -64,7 +64,14 @@ with tempfile.TemporaryDirectory(prefix='trace-cli-')as temp:
     done.wait(2)
    if done.is_set():child.stdout.close()
  try:
-  assert not cli('status')['running'];assert start_with_capture_pipe()['running'];assert cli('start')['alreadyRunning'];assert cli('provider','list')==[]
+  assert not cli('status')['running'];assert not cli('backup','status')['enabled']
+  offline=cli('backup','enable');assert offline['enabled'] and not offline['running'];assert cli('backup','status')['enabled']
+  assert not cli('backup','disable')['enabled']
+  assert start_with_capture_pipe()['running'];assert cli('start')['alreadyRunning'];assert cli('provider','list')==[]
+  online=cli('backup','enable');assert online['enabled'] and online['running']
+  assert cli('backup','status')['enabled']
+  with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/settings/file-backup',timeout=5) as response:assert json.load(response)['config']['enabled']
+  assert not cli('backup','disable')['enabled']
   provider=cli('provider','add','--name','Mock','--url',f'http://127.0.0.1:{upstream.server_port}','--activate');assert cli('provider','current')['id']==provider['id'];assert cli('provider','list')[0]['active'];url=cli('provider','url')['openai']
   messages=[{'role':'user','content':'hello api_key=do-not-export'}]
   def send(messages):

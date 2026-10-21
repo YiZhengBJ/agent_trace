@@ -258,6 +258,18 @@ impl Runtime {
                 include_bytes!("../../../gateway/session-matcher.mjs").as_slice(),
             ),
             (
+                "file-backup.mjs",
+                include_bytes!("../../../gateway/file-backup.mjs").as_slice(),
+            ),
+            (
+                "tool-call-capture.mjs",
+                include_bytes!("../../../gateway/tool-call-capture.mjs").as_slice(),
+            ),
+            (
+                "file-backup.example.json",
+                include_bytes!("../../../gateway/file-backup.example.json").as_slice(),
+            ),
+            (
                 "public/index.html",
                 include_bytes!("../../../gateway/public/index.html").as_slice(),
             ),
@@ -418,6 +430,82 @@ impl Runtime {
             bail!("Gateway engine exited: {status}");
         }
         Ok(())
+    }
+    pub fn backup(&self, enabled: Option<bool>) -> Result<Value> {
+        if self.running() {
+            let mut state = self.get("/api/settings/file-backup")?;
+            if let Some(enabled) = enabled {
+                state["config"]["enabled"] = json!(enabled);
+                state = self.send(
+                    "PUT",
+                    "/api/settings/file-backup",
+                    state["config"].clone(),
+                    true,
+                )?;
+            }
+            return Ok(
+                json!({"enabled":state["config"]["enabled"],"configPath":state["configPath"],"running":true,"effective":"subsequent-requests"}),
+            );
+        }
+        if !self.daemon_idle() {
+            bail!("Gateway process exists but cannot be contacted; check trace status and the configured port before modifying backups");
+        }
+        let path = std::env::var_os("TRACE_FILE_BACKUP_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.home.join("data/file-backup.json"));
+        if enabled.is_none() && !path.exists() {
+            return Ok(
+                json!({"enabled":false,"configPath":path,"running":false,"effective":"next-start"}),
+            );
+        }
+        self.init()?;
+        let engine = self.extract_engine()?;
+        // Reuse the gateway's validation and atomic writer; the Node runtime is
+        // bundled, and this short-lived process never starts a listening server.
+        let script = r#"
+import {pathToFileURL} from 'node:url';
+import {mkdir} from 'node:fs/promises';
+const {createFileBackup}=await import(pathToFileURL(process.env.TRACE_BACKUP_MODULE));
+const dataDir=process.env.TRACE_BACKUP_DATA_DIR;
+await mkdir(dataDir,{recursive:true,mode:0o700});
+const store=await createFileBackup({dataDir});
+let {configHash,...config}=await store.config();
+if(process.env.TRACE_BACKUP_ACTION!=='status'){
+ config.enabled=process.env.TRACE_BACKUP_ACTION==='enable';
+ config=await store.update(config);
+}
+console.log(JSON.stringify({enabled:config.enabled,configPath:store.configPath,running:false,effective:'next-start'}));
+"#;
+        let mut command = Command::new(self.node_path()?);
+        command
+            .args(["--input-type=module", "--eval", script])
+            .env(
+                "TRACE_BACKUP_MODULE",
+                engine.with_file_name("file-backup.mjs"),
+            )
+            .env("TRACE_BACKUP_DATA_DIR", self.home.join("data"))
+            .env(
+                "TRACE_BACKUP_ACTION",
+                match enabled {
+                    Some(true) => "enable",
+                    Some(false) => "disable",
+                    None => "status",
+                },
+            )
+            .stdin(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let output = command.output()?;
+        if !output.status.success() {
+            bail!(
+                "Cannot update file backup settings: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        serde_json::from_slice(&output.stdout).context("Invalid backup settings response")
     }
     pub fn provider(&self, name: &str) -> Result<Value> {
         let state = self.get("/api/state")?;

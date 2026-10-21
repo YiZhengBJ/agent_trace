@@ -46,6 +46,11 @@ enum Commands {
         #[command(subcommand)]
         command: Session,
     },
+    /// Enable, disable or inspect pre-tool file backups
+    Backup {
+        #[command(subcommand)]
+        command: Backup,
+    },
     /// Install or remove login/background persistence
     Service {
         #[arg(value_parser=["install","uninstall","status"])]
@@ -62,6 +67,15 @@ enum Commands {
     },
     /// Show config and runtime locations
     Config,
+}
+#[derive(Subcommand)]
+enum Backup {
+    /// Enable backups; takes effect for subsequent requests without restart
+    Enable,
+    /// Disable backups without deleting existing snapshots
+    Disable,
+    /// Show the persisted switch and effective configuration file
+    Status,
 }
 #[derive(Subcommand)]
 enum Provider {
@@ -186,6 +200,11 @@ fn run() -> Result<()> {
             json!({"url":runtime.base()})
         }
         Commands::Import { from } => runtime.import_data(&from)?,
+        Commands::Backup { command } => runtime.backup(match command {
+            Backup::Enable => Some(true),
+            Backup::Disable => Some(false),
+            Backup::Status => None,
+        })?,
         Commands::Service {
             action,
             dry_run,
@@ -353,6 +372,17 @@ mod tests {
             "secret"
         ])
         .is_err());
+    }
+    #[test]
+    fn backup_commands_accept_global_flags() {
+        for action in ["enable", "disable", "status"] {
+            let args =
+                Args::try_parse_from(["trace", "backup", action, "--json", "--home", "test-home"])
+                    .unwrap();
+            assert!(matches!(args.command, Commands::Backup { .. }));
+            assert!(args.json);
+        }
+        assert!(Args::try_parse_from(["trace", "backup", "unknown"]).is_err());
     }
     #[test]
     fn service_install_is_explicit() {

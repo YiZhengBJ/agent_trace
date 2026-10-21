@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "enabled": false,
+  "maxFileBytes": 8388608,
+  "maxFilesPerResponse": 64,
+  "maxResponseBytes": 33554432,
+  "rules": [
+    {
+      "id": "read-file",
+      "operation": "read",
+      "toolNames": [
+        "Read",
+        "read_file",
+        "read_file_from_disk",
+        "read_text_file",
+        "read"
+      ],
+      "pathFields": [
+        "file_path",
+        "path",
+        "filename"
+      ]
+    },
+    {
+      "id": "write-file",
+      "operation": "write",
+      "toolNames": [
+        "Write",
+        "write_file",
+        "write_to_file",
+        "write"
+      ],
+      "pathFields": [
+        "file_path",
+        "path",
+        "filename"
+      ]
+    },
+    {
+      "id": "edit-file",
+      "operation": "write",
+      "toolNames": [
+        "Edit",
+        "MultiEdit",
+        "edit_file",
+        "replace_in_file",
+        "edit"
+      ],
+      "pathFields": [
+        "file_path",
+        "path",
+        "edits.*.file_path",
+        "edits.*.path"
+      ]
+    }
+  ]
+}

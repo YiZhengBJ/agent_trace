@@ -6,8 +6,15 @@ $('#rail-toggle').onclick=()=>{
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state={providers:[],sessions:[]},selected=null,requests=[],selectedRequest=null,filter='all',view='sessions',rawTab='request',lastSignature='';
 const trajectoryStates=new Map();
+let uiPrefs={autoRefresh:true,tokensOpen:false};
+try{const saved=JSON.parse(localStorage.getItem('trace-ui-preferences')||'{}');for(const key of ['autoRefresh','tokensOpen'])if(typeof saved?.[key]==='boolean')uiPrefs[key]=saved[key];}catch{}
+function saveUiPrefs(){try{localStorage.setItem('trace-ui-preferences',JSON.stringify(uiPrefs));}catch{toast('浏览器无法保存显示偏好，本次使用仍会生效');}}
+function updateRefreshLabel(){const footer=$('.session-footer');if(footer)footer.innerHTML=`<i class="green-dot"></i> ${uiPrefs.autoRefresh?'自动刷新':'已暂停刷新'} <span>本地持久化</span>`;}
+$('#setting-auto-refresh').checked=uiPrefs.autoRefresh;$('#setting-token-chart').checked=uiPrefs.tokensOpen;updateRefreshLabel();
+$('#setting-auto-refresh').onchange=e=>{uiPrefs.autoRefresh=e.target.checked;saveUiPrefs();updateRefreshLabel();};
+$('#setting-token-chart').onchange=e=>{uiPrefs.tokensOpen=e.target.checked;for(const state of trajectoryStates.values())state.tokensOpen=uiPrefs.tokensOpen;lastSignature='';saveUiPrefs();};
 let eventRequestId='',eventIndex=0;
-function trajectoryState(){if(!trajectoryStates.has(selected))trajectoryStates.set(selected,{expanded:false,items:new Map()});return trajectoryStates.get(selected);}
+function trajectoryState(){if(!trajectoryStates.has(selected))trajectoryStates.set(selected,{expanded:false,items:new Map(),tokensOpen:uiPrefs.tokensOpen});return trajectoryStates.get(selected);}
 function setAllEvents(expanded){const state=trajectoryState();state.expanded=expanded;state.bulkExpanded=expanded;state.items.clear();$$('#trajectory details[data-event]').forEach(el=>{el.open=expanded;});updateBulkToggle();updateDisclosureButtons();}
 $('#trajectory').addEventListener('toggle',e=>{const el=e.target;if(el.matches('details[data-event]')&&el.isConnected){trajectoryState().items.set(el.dataset.event,el.open);updateBulkToggle();}},true);
 function updateBulkToggle(){
@@ -20,10 +27,70 @@ const date=s=>new Date(s).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month
 async function api(url,options){const r=await fetch(url,options);const data=await r.json();if(!r.ok)throw new Error(data.error||'请求失败');return data;}
 function toast(s){$('#toast').textContent=s;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),2800);}
 async function copy(s){try{await navigator.clipboard.writeText(s);toast('已复制到剪贴板');}catch{toast('复制失败，请手动选择地址');}}
-function showView(v){view=v;for(const name of ['sessions','providers','connect'])$(`#${name}-view`).hidden=name!==v;$$('.nav').forEach(b=>b.classList.toggle('active',b.dataset.view===v));$('#crumb').textContent={sessions:'轨迹记录',providers:'Providers',connect:'接入指南'}[v];if(v==='providers')renderProviders();if(v==='connect')renderConnect();}
+function showView(v){hideBackupTooltip();if(view==='settings'&&v!=='settings')void flushBackupChanges();view=v;for(const name of ['sessions','providers','connect','settings'])$(`#${name}-view`).hidden=name!==v;$$('.nav').forEach(b=>b.classList.toggle('active',b.dataset.view===v));$('#crumb').textContent={sessions:'轨迹记录',providers:'Providers',connect:'接入指南',settings:'设置'}[v];if(v==='providers')renderProviders();if(v==='connect')renderConnect();if(v==='settings'&&!backupConfig)loadBackupSettings();if(v==='sessions')refresh();}
 $$('.nav').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 const dialog=$('#provider-dialog');for(const id of ['add-top','add-provider'])$('#'+id).onclick=()=>dialog.showModal();$('#close-dialog').onclick=()=>dialog.close();
 $('#provider-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('[type=submit]');button.disabled=true;try{await api('/api/providers',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});dialog.close();e.target.reset();$('#form-error').textContent='';await refresh();showView('providers');toast('Provider 已连接，本地端点已生成');}catch(e){$('#form-error').textContent=e.message;}finally{button.disabled=false;}};
+let backupConfig;
+async function loadBackupSettings(){
+ const button=$('#backup-reload');button.disabled=true;$('#backup-fields').disabled=true;$('#backup-error').textContent='';$('#backup-message').textContent='读取中…';
+ try{
+  const data=await api('/api/settings/file-backup');backupConfig=data.config;
+  $('#backup-enabled').checked=backupConfig.enabled;
+  $('#backup-file-limit').value=backupConfig.maxFileBytes/1048576;$('#backup-count-limit').value=backupConfig.maxFilesPerResponse;$('#backup-response-limit').value=backupConfig.maxResponseBytes/1048576;
+  $('#backup-rules').value=JSON.stringify(backupConfig.rules,null,2);$('#backup-location').textContent='配置：'+data.configPath+' · 备份目录：'+data.backupDirectory;
+  $('#backup-error').textContent='';$('#backup-message').textContent=backupConfig.enabled?'已生效 · 文件备份已启用':'已生效 · 文件备份已关闭';$('#backup-fields').disabled=false;
+ }catch(e){$('#backup-error').textContent='读取备份设置失败：'+e.message;$('#backup-message').textContent='';}finally{button.disabled=false;}
+}
+$('#backup-reload').onclick=loadBackupSettings;
+$('#backup-dsh-rules').onclick=()=>{
+ try{
+  const rules=JSON.parse($('#backup-rules').value);if(!Array.isArray(rules))throw new Error('规则必须是数组');
+  for(const [name,operation]of [['read','read'],['write','write'],['edit','write']]){
+   if(rules.some(r=>r.toolNames?.includes(name)))continue;
+   const baseId='dsh-'+name;let id=baseId,index=2;while(rules.some(r=>r.id===id))id=baseId+'-'+index++;
+   rules.push({id,operation,toolNames:[name],pathFields:['file_path','path']});
+  }
+  $('#backup-rules').value=JSON.stringify(rules,null,2);queueBackupChange({rules});
+ }catch(e){$('#backup-error').textContent='规则 JSON 无效：'+e.message;}
+};
+let backupPending={},backupSaving=false,backupTimer;
+async function flushBackupChanges(){
+ clearTimeout(backupTimer);
+ if(backupSaving||!backupConfig||!Object.keys(backupPending).length)return;
+ backupSaving=true;$('#backup-reload').disabled=true;
+ const patch=backupPending;backupPending={};$('#backup-message').textContent='保存中…';
+ try{
+  const data=await api('/api/settings/file-backup',{method:'PUT',signal:AbortSignal.timeout(10000),headers:{'content-type':'application/json'},body:JSON.stringify({...backupConfig,...patch})});
+  backupConfig=data.config;
+  $('#backup-message').textContent=Object.keys(backupPending).length?'保存中…':(backupConfig.enabled?'已生效 · 文件备份已启用':'已生效 · 文件备份已关闭');
+ }catch(e){
+  backupPending={...patch,...backupPending};$('#backup-error').textContent='修改未生效：'+e.message+'。再次修改可重试。';$('#backup-message').textContent='保存失败，仍使用上次生效的配置';
+  backupSaving=false;$('#backup-reload').disabled=false;return;
+ }
+ backupSaving=false;$('#backup-reload').disabled=false;
+ if(Object.keys(backupPending).length)void flushBackupChanges();
+}
+function queueBackupChange(patch,delay=0){
+ backupPending={...backupPending,...patch};$('#backup-error').textContent='';$('#backup-message').textContent=delay?'正在编辑，稍后自动保存…':'保存中…';clearTimeout(backupTimer);
+ if(delay)backupTimer=setTimeout(flushBackupChanges,delay);else void flushBackupChanges();
+}
+$('#backup-enabled').onchange=e=>queueBackupChange({enabled:e.target.checked});
+for(const [id,key,scale]of [['backup-file-limit','maxFileBytes',1048576],['backup-count-limit','maxFilesPerResponse',1],['backup-response-limit','maxResponseBytes',1048576]]){
+ const input=$('#'+id);
+ input.oninput=()=>{
+  if(!input.validity.valid||input.value===''){delete backupPending[key];$('#backup-error').textContent='请输入有效的资源上限；该项未生效。';return;}
+  queueBackupChange({[key]:Math.round(Number(input.value)*scale)},400);
+ };
+ input.onchange=()=>{if(input.validity.valid&&input.value!=='')void flushBackupChanges();};
+}
+$('#backup-rules').oninput=()=>{
+ try{const rules=JSON.parse($('#backup-rules').value);if(!Array.isArray(rules))throw new Error('规则必须是数组');queueBackupChange({rules},600);}
+ catch(e){delete backupPending.rules;$('#backup-error').textContent='规则未生效：'+e.message;$('#backup-message').textContent='正在编辑规则，仍使用上次生效的规则';}
+};
+$('#backup-rules').onchange=()=>void flushBackupChanges();
+$('#backup-form').onsubmit=e=>{e.preventDefault();void flushBackupChanges();};
+$('#backup-reload').onclick=()=>{clearTimeout(backupTimer);backupPending={};void loadBackupSettings();};
 $('#demo').onclick=async()=>{const b=$('#demo');b.disabled=true;try{await api('/api/demo',{method:'POST'});selected=null;await refresh();toast('演示轨迹已通过网关录制');}catch(e){toast(e.message);}finally{b.disabled=false;}};
 $('#search').oninput=renderSessions;$$('.filter').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;$$('.filter').forEach(x=>x.classList.toggle('selected',x===b));renderSessions();});
 for(const id of ['session-sort','session-range','session-from','session-to'])$('#'+id).addEventListener('change',()=>{$('#session-custom-range').hidden=$('#session-range').value!=='custom';renderSessions();});
@@ -127,13 +194,90 @@ function requestTrigger(r){
  }
  return 'user';
 }
+let toolOperationIndex=new Map();
+function indexToolOperations(list){
+ const index=new Map();
+ const byName=name=>/^(read|read_file|readfile|read_file_from_disk|read_text_file)$/i.test(name||'')?'read':/^(write|write_file|write_to_file|edit|multiedit|edit_file|replace_in_file|apply_patch|update_file|patch_file)$/i.test(name||'')?'write':null;
+ const add=(id,name,operation)=>{const kind=operation||byName(name);if(id&&kind){if(!index.has(id))index.set(id,new Set());index.get(id).add(kind);}};
+ for(const record of list){
+  const input=record.request?.messages??record.request?.input;
+  for(const m of Array.isArray(input)?input:[]){
+   for(const call of m.tool_calls||[])add(call.id,call.function?.name);
+   for(const part of Array.isArray(m.content)?m.content:[])if(part.type==='tool_use')add(part.id,part.name);
+   if(m.type==='function_call')add(m.call_id||m.id,m.name);
+  }
+  for(const file of record.fileBackup?.files||[])add(file.toolCallId,file.toolName,file.operation);
+ }
+ return index;
+}
+function returnedFileOperations(record){
+ const input=record.request?.messages??record.request?.input,ids=[];
+ for(const m of [...(Array.isArray(input)?input:[])].reverse()){
+  const blocks=Array.isArray(m.content)?m.content:[];
+  if(m.role==='tool'){if(m.tool_call_id)ids.push(m.tool_call_id);continue;}
+  if(m.type==='function_call_output'){if(m.call_id)ids.push(m.call_id);continue;}
+  const results=blocks.filter(b=>b.type==='tool_result');
+  if(results.length){ids.push(...results.map(b=>b.tool_use_id));continue;}
+  if(m.role==='user'){
+   const text=typeof m.content==='string'?m.content:blocks.filter(b=>b.type==='text'||b.type==='input_text').map(b=>b.text||'').join('');
+   if(/^(Current runtime context|<system-reminder>|Time sampled while)/.test(text))continue;
+  }
+  break;
+ }
+ return new Set(ids.flatMap(id=>[...(toolOperationIndex.get(id)||[])]));
+}
+function roundFlags(record,kind){
+ const labels=[];
+ if(kind==='tool')for(const operation of returnedFileOperations(record))labels.push(`<span class="round-tag operation-${operation}" title="本次返回包含文件${operation==='read'?'读取':'写入或修改'}工具的执行结果">${operation==='read'?'读':'写'}</span>`);
+ return labels.length?`<span class="exchange-flags">${labels.join('')}</span>`:'';
+}
+function archiveIndicator(record){
+ if(!record.fileBackup?.files?.length)return '';
+ return `<button type="button" class="round-archive" data-archive="${esc(record.id)}" aria-label="查看本轮文件备份与复用" aria-describedby="backup-tooltip"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v12h14V8M10 12h4"/></svg></button>`;
+}
+function backupTooltipContents(record){
+ const files=record.fileBackup?.files||[];
+ const unique=items=>[...new Map(items.map(f=>[f.backupPath||f.resolvedPath||f.path||f.toolCallId,f])).values()];
+ const saved=unique(files.filter(f=>f.status==='saved'&&!f.reused&&f.backupPath));
+ const reused=unique(files.filter(f=>f.reused));
+ const other=unique(files.filter(f=>!f.reused&&f.status!=='saved'));
+ const fileName=f=>esc(f.resolvedPath||f.path||f.toolName||'未解析路径');
+ const states={absent:'原文件不存在，已记录初始状态',too_large:'文件超过大小限制',file_limit:'超过本轮文件数限制',not_regular_file:'不是普通文件',relative_path_unresolved:'无法解析相对路径',backup_storage:'备份目录不参与备份',invalid_arguments:'工具参数无效',no_path:'未找到文件路径',error:'采集失败'};
+ const actual=saved.map(f=>`<li><strong>${fileName(f)}</strong><code>${esc(f.backupPath)}</code><small>${fmt(f.size)} 字节</small></li>`).join('');
+ const notes=other.map(f=>`<li><strong>${fileName(f)}</strong><small>${esc(states[f.status]||f.status)}${f.error?'：'+esc(f.error):''}</small></li>`).join('');
+ const references=reused.map(f=>{const index=requests.findIndex(r=>r.id===f.sourceRecordId);return `<li><strong>${fileName(f)}</strong><small>${index<0?'复用本 query 的首次记录':'复用第 '+String(index+1).padStart(2,'0')+' 轮首次记录'}${f.status==='absent'?' · 原文件不存在':''}</small>${f.backupPath?`<code>${esc(f.backupPath)}</code>`:''}</li>`;}).join('');
+ return `<section><h4>实际备份文件列表 <span>${saved.length}</span></h4>${actual?`<ul>${actual}</ul>`:'<p>本轮未新增备份文件</p>'}${notes?`<ul>${notes}</ul>`:''}</section><section><h4>备份复用 <span>${reused.length}</span></h4>${references?`<ul>${references}</ul>`:'<p>本轮无备份复用</p>'}</section>`;
+}
+const backupTooltip=document.createElement('div');backupTooltip.id='backup-tooltip';backupTooltip.className='backup-tooltip';backupTooltip.setAttribute('role','tooltip');backupTooltip.hidden=true;document.body.append(backupTooltip);
+let archiveHideTimer;
+function hideBackupTooltip(){clearTimeout(archiveHideTimer);backupTooltip.hidden=true;}
+function showBackupTooltip(button){
+ clearTimeout(archiveHideTimer);const record=requests.find(r=>r.id===button.dataset.archive);if(!record)return;
+ backupTooltip.innerHTML=backupTooltipContents(record);backupTooltip.hidden=false;
+ const rect=button.getBoundingClientRect(),width=backupTooltip.offsetWidth,height=backupTooltip.offsetHeight;
+ backupTooltip.style.left=Math.max(8,Math.min(rect.left,innerWidth-width-8))+'px';
+ backupTooltip.style.top=Math.max(8,rect.bottom+height+8<innerHeight?rect.bottom+6:rect.top-height-6)+'px';
+}
+const deferHideBackupTooltip=()=>{clearTimeout(archiveHideTimer);archiveHideTimer=setTimeout(hideBackupTooltip,140);};
+$('#trajectory').addEventListener('pointerover',e=>{const button=e.target.closest('[data-archive]');if(button)showBackupTooltip(button);});
+$('#trajectory').addEventListener('pointerout',e=>{if(e.target.closest('[data-archive]')&&!e.relatedTarget?.closest?.('[data-archive]'))deferHideBackupTooltip();});
+$('#trajectory').addEventListener('focusin',e=>{const button=e.target.closest('[data-archive]');if(button)showBackupTooltip(button);});
+$('#trajectory').addEventListener('focusout',e=>{if(e.target.closest('[data-archive]'))deferHideBackupTooltip();});
+$('#trajectory').addEventListener('click',e=>{const button=e.target.closest('[data-archive]');if(button){e.preventDefault();e.stopPropagation();showBackupTooltip(button);}});
+backupTooltip.onpointerenter=()=>clearTimeout(archiveHideTimer);backupTooltip.onpointerleave=deferHideBackupTooltip;
+$('#trajectory').addEventListener('scroll',hideBackupTooltip,{passive:true});window.addEventListener('resize',hideBackupTooltip);document.addEventListener('keydown',e=>{if(e.key==='Escape')hideBackupTooltip();});
 function exchangeGroup(r,direction,number,contents){
  const key=r.id+':'+direction,state=trajectoryState(),expanded=state.items.has(key)?state.items.get(key):state.expanded;
  const isRequest=direction==='request',count=(contents.match(/<details class="event /g)||[]).length;
  const kind=isRequest?requestTrigger(r):'response',label=isRequest?(kind==='tool'?'工具返回请求':'用户请求'):'LLM 响应';
- const fragment=document.createElement('div');fragment.innerHTML=contents;const candidates=[...fragment.querySelectorAll(':scope > .event')];const preview=isRequest?candidates.filter(el=>(el.classList.contains('user')||el.classList.contains('tool'))&&!el.querySelector('.event-title')?.textContent.startsWith('工具定义')).at(-1):candidates.find(el=>el.classList.contains('assistant'))||candidates[0];const text=(preview?.querySelector('.event-content,.tool-box')?.textContent||fragment.textContent).replace(/\s+/g,' ').trim();
- const description=isRequest?r.path:(r.httpStatus?'HTTP '+r.httpStatus:'等待上游')+' · '+(r.stream?'SSE':'JSON')+' · '+ms(r.durationMs);
- return `<details class="exchange-group ${direction} kind-${kind}" data-event="${esc(key)}" data-kind="${kind}" ${expanded?'open':''}><summary aria-label="${label} ${number}，展开或收起"><span class="exchange-icon">${isRequest?(kind==='tool'?'⌘':'↗'):'↙'}</span><span class="exchange-heading"><strong>${label} ${number}${isRequest?`<span class="request-model" title="模型：${esc(r.model||r.request?.model||'unknown')}">${esc(r.model||r.request?.model||'unknown')}</span>`:''}<span>${esc(description)}</span></strong><span class="exchange-description">${esc(text.slice(0,160))}</span></span><span class="exchange-count">${count} 项</span><button type="button" class="event-chevron disclosure-toggle" aria-label="展开或收起">›</button></summary><div class="exchange-body"><div class="exchange-toolbar"><span>${isRequest?'本次请求的内容':'上游返回的具体内容'}</span><button class="request-select" data-request="${esc(r.id)}" data-direction="${direction}">原文与详情 ↗</button></div>${contents}</div></details>`;
+ const fragment=document.createElement('div');fragment.innerHTML=contents;const candidates=[...fragment.querySelectorAll(':scope > .event')];
+ // Repeated history is nested in its own disclosure; direct user events are new.
+ const firstNewUser=isRequest&&kind==='user'&&number!=='01';
+ const preview=firstNewUser?candidates.find(el=>el.classList.contains('user')):isRequest?candidates.filter(el=>(el.classList.contains('user')||el.classList.contains('tool'))&&!el.querySelector('.event-title')?.textContent.startsWith('工具定义')).at(-1):candidates.find(el=>el.classList.contains('assistant'))||candidates[0];
+ const text=(preview?.querySelector('.event-content,.tool-box')?.textContent||(firstNewUser?'本次请求没有新增用户指令':fragment.textContent)).replace(/\s+/g,' ').trim();
+ const responseUsage=isRequest?'':(()=>{const u=usage(r);return `<span class="response-usage" aria-label="响应 Token 用量">${['input','cached','output'].map(key=>`<span>${key} <b>${u[key]==null?'—':u[key].toLocaleString('en-US')}</b></span>`).join('')}</span>`;})();
+ const description=isRequest?'':(r.httpStatus?'HTTP '+r.httpStatus:'等待上游')+' · '+(r.stream?'SSE':'JSON')+' · '+ms(r.durationMs);
+ return `<details class="exchange-group ${direction} kind-${kind}" data-event="${esc(key)}" data-kind="${kind}" ${expanded?'open':''}><summary aria-label="${label} ${number}，展开或收起"><span class="exchange-icon">${isRequest?(kind==='tool'?'⌘':'↗'):'↙'}</span><span class="exchange-heading"><strong>${label} ${number}${isRequest?`<span class="request-model" title="模型：${esc(r.model||r.request?.model||'unknown')}">${esc(r.model||r.request?.model||'unknown')}</span>`:''}${isRequest?roundFlags(r,kind):archiveIndicator(r)}${description?`<span>${esc(description)}</span>`:''}${responseUsage}</strong><span class="exchange-description">${esc(text.slice(0,160))}</span></span><span class="exchange-count">${count} 项</span><button type="button" class="event-chevron disclosure-toggle" aria-label="展开或收起">›</button></summary><div class="exchange-body"><div class="exchange-toolbar"><span>${isRequest?'本次请求的内容':'上游返回的具体内容'}</span><button class="request-select" data-request="${esc(r.id)}" data-direction="${direction}">原文与详情 ↗</button></div>${contents}</div></details>`;
 }
 function usage(r){
  let result={};const merge=p=>{const u=p?.usage||p?.response?.usage||p?.message?.usage;if(u)for(const[k,v]of Object.entries(u))if(v!=null)result[k]=typeof v==='object'?{...result[k],...v}:v;};
@@ -172,7 +316,7 @@ function renderDetail(){const r=requests.find(x=>x.id===selectedRequest)||reques
 async function loadSession(){
  if(!selected){$('#trajectory-head').innerHTML='<h2>开始记录你的第一个 Agent Session</h2>';$('#trajectory').innerHTML='<div class="empty">添加 Provider 后，将本地地址填入 Harness。<br>或者点击「＋ 演示」体验完整录制链路。</div>';requests=[];renderDetail();return;}
  const id=selected,list=await api('/api/sessions/'+encodeURIComponent(id));if(id!==selected)return;
- const signature=JSON.stringify(list.map(r=>[r.id,r.status,r.bytes,r.durationMs]));if(signature===lastSignature)return;lastSignature=signature;requests=list;
+ const signature=JSON.stringify(list.map(r=>[r.id,r.status,r.bytes,r.durationMs,r.fileBackupEnabled,r.fileBackup?.status,r.fileBackup?.files?.length]));if(signature===lastSignature)return;lastSignature=signature;hideBackupTooltip();requests=list;toolOperationIndex=indexToolOperations(list);
  const s=state.sessions.find(s=>s.id===id);if(!s)return;
  $('#trajectory-head').innerHTML=`<div class="trace-label">SESSION TRAJECTORY<button id="export">↓ 导出 JSON</button></div><h2>${esc(s.title)}</h2><div class="trace-sub"><span class="ok">● ${s.status==='streaming'?'录制中':s.errors?'包含异常':'已完成'}</span><span>${esc(s.providerName)}</span><span>${s.count} 次请求</span><span>${esc(date(s.startedAt))}</span></div><div id="timeline"></div>`;
  $('#export').onclick=()=>{const a=document.createElement('a');a.href='/api/sessions/'+encodeURIComponent(id)+'?export=1';a.download='session.json';a.click();};
@@ -288,4 +432,4 @@ function mountTimeline(host,trajectory,list,trigger){
  disposeTimeline=()=>{tokenTooltip.remove();cancelAnimationFrame(frame);resize.disconnect();trajectory.removeEventListener('scroll',sync);trajectory.removeEventListener('toggle',sync,true);scroll.removeEventListener('wheel',wheel);};
 }
 
-await refresh();setInterval(refresh,2500);
+await refresh();setInterval(()=>{if(uiPrefs.autoRefresh)refresh();},2500);
