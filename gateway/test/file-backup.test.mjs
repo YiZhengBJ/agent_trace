@@ -237,3 +237,19 @@ test('query identity distinguishes sessions and new user queries while preservin
  const again={id:'three',sessionId:'s',request:{messages:user},status:'completed'};tracker.assign(again);assert.notEqual(again.queryId,first.queryId);
  const other={id:'four',sessionId:'other',request:{messages:user},status:'completed'};tracker.assign(other);assert.notEqual(other.queryId,again.queryId);
 });
+
+
+test('working directory parser respects paired quotes and sentence punctuation',()=>{
+ const root='/Users/example/My Project';
+ for(const quote of ['"',"'",'`'])for(const suffix of ['', '.', ';', '。']){
+  assert.equal(requestWorkingDirectory({system:`Current working directory: ${quote}${root}${quote}${suffix}`}),root);
+ }
+ assert.equal(requestWorkingDirectory({system:'Current working directory: "/Users/example/test_folder".'}),'/Users/example/test_folder');
+ assert.equal(requestWorkingDirectory({system:`Working directory: ${root}.`}),root+'.');
+ assert.equal(requestWorkingDirectory({metadata:{cwd:root+'.'}}),root+'.');
+ assert.equal(requestWorkingDirectory({system:`Working directory: "${root}.".`}),root+'.');
+ assert.equal(requestWorkingDirectory({system:`Working directory: "${root}`}),null);
+ assert.equal(requestWorkingDirectory({system:`Working directory: "${root}" trailing prose`}),null);
+ assert.equal(requestWorkingDirectory({system:`Working directory: "${root}".\nWorking directory: "/different".`}),null);
+ assert.equal(requestWorkingDirectory({input:[{role:'user',content:`<environment_context><cwd>${root}</cwd></environment_context>`}]}),root);
+});

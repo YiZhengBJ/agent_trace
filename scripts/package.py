@@ -3,6 +3,14 @@
 import argparse, os, pathlib, platform, shutil, subprocess, tarfile, zipfile, plistlib, urllib.request
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 def run(*args,**kw): subprocess.run([str(a) for a in args],cwd=ROOT,check=True,**kw)
+def copy_lab(portable):
+ # Offline engine is a separate entry point; it shares the bundled runtime only.
+ shutil.copytree(ROOT/'lab',portable/'lab',dirs_exist_ok=True,ignore=shutil.ignore_patterns('test','__pycache__'))
+ (portable/'gateway').mkdir(exist_ok=True);(portable/'scripts').mkdir(exist_ok=True)
+ for name in ['file-backup.mjs','file-backup.example.json','session-matcher.mjs','tool-call-capture.mjs']:
+  shutil.copy2(ROOT/'gateway'/name,portable/'gateway'/name)
+ for name in ['trace-lab','trace-lab.cmd']:
+  shutil.copy2(ROOT/'scripts'/name,portable/'scripts'/name)
 def main():
  p=argparse.ArgumentParser();p.add_argument('--node');p.add_argument('--desktop',action='store_true');p.add_argument('--native-macos-bundle',action='store_true');p.add_argument('--skip-build',action='store_true');a=p.parse_args()
  node=a.node or shutil.which('node');fallback=pathlib.Path.home()/'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node'
@@ -15,6 +23,7 @@ def main():
  if not a.skip_build:run('cargo','build','--locked','--release','-p','trace-gateway-cli')
  cli=ROOT/'target/release'/('trace'+suffix);bins=ROOT/'desktop/binaries';bins.mkdir(exist_ok=True);shutil.copy2(cli,bins/('trace-'+target+suffix));background=ROOT/'target/release'/('trace-background'+suffix);shutil.copy2(background,bins/('trace-background-'+target+suffix))
  dist=ROOT/'dist';dist.mkdir(exist_ok=True);portable=dist/('trace-gateway-'+target);portable.mkdir(exist_ok=True);shutil.copy2(cli,portable/cli.name);shutil.copy2(background,portable/background.name);shutil.copytree(runtime,portable/'runtime',dirs_exist_ok=True);shutil.copy2(ROOT/'README.md',portable/'README.md');shutil.copy2(ROOT/'LICENSE',portable/'LICENSE');shutil.copy2(ROOT/'THIRD_PARTY_NOTICES.md',portable/'THIRD_PARTY_NOTICES.md')
+ copy_lab(portable)
  if os.name=='nt':
   with zipfile.ZipFile(str(portable)+'.zip','w',zipfile.ZIP_DEFLATED)as z:
    for f in portable.rglob('*'):

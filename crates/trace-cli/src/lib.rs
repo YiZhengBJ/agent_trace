@@ -274,6 +274,14 @@ impl Runtime {
                 include_bytes!("../../../gateway/public/index.html").as_slice(),
             ),
             (
+                "lab-view.mjs",
+                include_bytes!("../../../gateway/lab-view.mjs").as_slice(),
+            ),
+            (
+                "public/lab.js",
+                include_bytes!("../../../gateway/public/lab.js").as_slice(),
+            ),
+            (
                 "public/app.js",
                 include_bytes!("../../../gateway/public/app.js").as_slice(),
             ),

@@ -13,6 +13,11 @@
 
 ## 快速使用（无需桌面）
 
+离线采样、Claude CLI 重放、可插拔评估与策略包发布位于独立的 **Trace Lab**，
+入口为 `scripts/trace-lab`（Windows：`scripts/trace-lab.cmd`），不占用在线网关进程。
+见 [Trace Lab 使用与边界](lab/README.md)。不需要重编译 Rust 即可从源码运行该模块；
+后续统一发行包会携带相同入口和内置 Node runtime。
+
 完整解压 CLI 发行包，保留 `trace`、`trace-background`（Windows 无窗口后台入口）和旁边的 `runtime/`。macOS/Linux：`./trace`；Windows PowerShell：`.\trace.exe`。
 
 ```sh
@@ -254,3 +259,7 @@ trace-uninstall -PurgeData
 每个包内附带文件校验清单 `SHA256SUMS.txt`。缺失任一预期桌面安装程序会导致构建失败；此流程仅上传 Actions Artifacts，不自动发布 GitHub Release。
 
 本地 macOS 包使用 ad-hoc 签名，仅供预览与内部分发，不等于 Apple Developer ID 签名和公证。公开分发前需要配置开发者证书/公证；Windows 代码签名同理。Ubuntu 和 Windows 包必须在对应 runner 构建并验证，不将源码或 CI 配置冒充已生成的安装包。
+
+### Lab 实验看板
+
+左侧栏 **Lab** 可绑定现有 `trace-lab` 配置文件的绝对路径，展示样本、重放、评估和策略及 JSON 详情。初版通过 CLI 执行实验，界面每 15 秒刷新。每类最多扫描 1,000 条，展示其中最新 100 条；超限或文件损坏会提示。配置绑定保存在网关数据目录 `lab-ui.json`；策略包尚未接入在线路由。

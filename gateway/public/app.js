@@ -1,3 +1,4 @@
+import {createLabUI} from './lab.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 $('#rail-toggle').onclick=()=>{
  const collapsed=document.body.classList.toggle('rail-collapsed'),button=$('#rail-toggle');
@@ -27,7 +28,8 @@ const date=s=>new Date(s).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month
 async function api(url,options){const r=await fetch(url,options);const data=await r.json();if(!r.ok)throw new Error(data.error||'请求失败');return data;}
 function toast(s){$('#toast').textContent=s;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),2800);}
 async function copy(s){try{await navigator.clipboard.writeText(s);toast('已复制到剪贴板');}catch{toast('复制失败，请手动选择地址');}}
-function showView(v){hideBackupTooltip();if(view==='settings'&&v!=='settings')void flushBackupChanges();view=v;for(const name of ['sessions','providers','connect','settings'])$(`#${name}-view`).hidden=name!==v;$$('.nav').forEach(b=>b.classList.toggle('active',b.dataset.view===v));$('#crumb').textContent={sessions:'轨迹记录',providers:'Providers',connect:'接入指南',settings:'设置'}[v];if(v==='providers')renderProviders();if(v==='connect')renderConnect();if(v==='settings'&&!backupConfig)loadBackupSettings();if(v==='sessions')refresh();}
+const labUI=createLabUI();
+function showView(v){hideBackupTooltip();if(view==='settings'&&v!=='settings')void flushBackupChanges();view=v;for(const name of ['sessions','providers','connect','settings','lab'])$(`#${name}-view`).hidden=name!==v;$$('.nav').forEach(b=>b.classList.toggle('active',b.dataset.view===v));$('#crumb').textContent={sessions:'轨迹记录',providers:'Providers',connect:'接入指南',settings:'设置',lab:'Lab'}[v];labUI.active(v==='lab');$('#add-top').hidden=v==='lab';if(v==='providers')renderProviders();if(v==='connect')renderConnect();if(v==='settings'&&!backupConfig)loadBackupSettings();if(v==='sessions')refresh();}
 $$('.nav').forEach(b=>b.onclick=()=>showView(b.dataset.view));
 const dialog=$('#provider-dialog');for(const id of ['add-top','add-provider'])$('#'+id).onclick=()=>dialog.showModal();$('#close-dialog').onclick=()=>dialog.close();
 $('#provider-form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('[type=submit]');button.disabled=true;try{await api('/api/providers',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});dialog.close();e.target.reset();$('#form-error').textContent='';await refresh();showView('providers');toast('Provider 已连接，本地端点已生成');}catch(e){$('#form-error').textContent=e.message;}finally{button.disabled=false;}};

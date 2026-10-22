@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+TRACE_LAB_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -x "$TRACE_LAB_ROOT/runtime/node" ]; then
+  exec "$TRACE_LAB_ROOT/runtime/node" "$TRACE_LAB_ROOT/lab/cli.mjs" "$@"
+fi
+exec node "$TRACE_LAB_ROOT/lab/cli.mjs" "$@"

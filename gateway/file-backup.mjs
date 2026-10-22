@@ -46,6 +46,15 @@ export function matchedPaths(c,call){
 
 // Relative tool paths require an explicit per-request working-directory signal.
 // Never resolve against the gateway process's own cwd.
+function contextDirectory(value){
+ const text=value.trim(),quote=text[0];
+ // Punctuation belongs to the surrounding prose only when a matching quote
+ // establishes where the path ends. Bare paths may legally end with a dot.
+ if(!['"',"'",'`'].includes(quote))return text;
+ const end=text.indexOf(quote,1);
+ if(end<0||! /^[\s.,;:!?。；，！？，]*$/.test(text.slice(end+1)))return null;
+ return text.slice(1,end);
+}
 export function requestWorkingDirectory(payload){
   const explicit=[payload?.cwd,payload?.working_directory,payload?.workingDirectory,payload?.metadata?.cwd,payload?.metadata?.working_directory,payload?.context?.cwd,payload?.environment?.cwd];
   const direct=explicit.find(value=>typeof value==='string'&&path.isAbsolute(value));if(direct)return direct;
@@ -53,8 +62,8 @@ export function requestWorkingDirectory(payload){
   const messages=payload?.messages||(Array.isArray(payload?.input)?payload.input:[]);
   const texts=[textOf(payload?.system),textOf(payload?.instructions),...messages.filter(m=>['system','developer'].includes(m.role)||/^(Current runtime context|<environment_context>|<system-reminder>|# Environment)/.test(textOf(m.content))).map(m=>textOf(m.content))];
   for(const text of texts.reverse()){
-    const values=[...text.matchAll(/(?:Primary working directory|Current working directory|Working directory|cwd)\s*:\s*([^\r\n]+)/gi),...text.matchAll(/<(?:cwd|working_directory)>([^<]+)<\/(?:cwd|working_directory)>/gi)].map(m=>m[1].trim().replace(/^[`"']|[`"']$/g,''));
-    const roots=[...new Set(values.filter(v=>path.isAbsolute(v)))];if(roots.length===1)return roots[0];if(roots.length>1)return null;
+    const values=[...text.matchAll(/(?:Primary working directory|Current working directory|Working directory|cwd)\s*:\s*([^\r\n]+)/gi),...text.matchAll(/<(?:cwd|working_directory)>([^<]+)<\/(?:cwd|working_directory)>/gi)].map(m=>contextDirectory(m[1]));
+    const roots=[...new Set(values.filter(v=>typeof v==='string'&&path.isAbsolute(v)))];if(roots.length===1)return roots[0];if(roots.length>1)return null;
   }
   return null;
 }

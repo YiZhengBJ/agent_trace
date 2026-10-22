@@ -1,3 +1,4 @@
+import {createLabView} from './lab-view.mjs';
 import http from 'node:http';
 import {SessionMatcher} from './session-matcher.mjs';
 import {redact,captureSecrets} from './redaction.mjs';
@@ -27,6 +28,7 @@ const userText = payload => {
 };
 export async function createGateway({port=Number(process.env.PORT||4317),dataDir=process.env.DATA_DIR||path.join(ROOT,'data'),seed=process.env.TRACE_SEED_DEMO==='1'}={}) {
   await mkdir(path.join(dataDir,'records'),{recursive:true,mode:0o700});
+  const labView=createLabView(dataDir);
   const fileBackup=await createFileBackup({dataDir});
   let providers=[];try{providers=JSON.parse(await readFile(path.join(dataDir,'providers.json'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
   const knownSecrets=new Set(),sessionMatcher=new SessionMatcher();
@@ -148,6 +150,19 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
         const {configHash,...config}=await fileBackup.config();
         return json(res,200,{config,configPath:fileBackup.configPath,backupDirectory:path.join(dataDir,'file-backups')});
       }
+      if(p==='/api/lab'&&req.method==='GET')return json(res,200,await labView.snapshot());
+      if(p==='/api/lab/settings'&&req.method==='GET')return json(res,200,await labView.settings());
+      if((p==='/api/lab/config'||p==='/api/lab/settings')&&req.method==='PUT'){
+        const local=[base,base.replace('127.0.0.1','localhost')].includes(req.headers.origin);
+        const token=process.env.TRACE_CONTROL_TOKEN&&req.headers['x-trace-control-token']===process.env.TRACE_CONTROL_TOKEN;
+        if(!local&&!token)return json(res,403,{error:'Local console or management token required'});
+        if(!String(req.headers['content-type']||'').startsWith('application/json'))return json(res,415,{error:'JSON required'});
+        try{const input=parse(await body(req,16384));return json(res,200,p==='/api/lab/settings'?await labView.saveSettings(input):await labView.bind(input?.configPath));}catch(e){return json(res,400,{error:e.message});}
+      }
+      if(p.startsWith('/api/lab/items/')&&req.method==='GET'){
+        const parts=p.slice('/api/lab/items/'.length).split('/');
+        try{if(parts.length!==2)throw new Error('Invalid artifact');return json(res,200,await labView.detail(...parts));}catch(e){return json(res,400,{error:e.message});}
+      }
       if(p==='/api/health')return json(res,200,{app:'trace-gateway',version:'0.2.0',instanceId:process.env.TRACE_INSTANCE_ID||null});
       if(p.startsWith('/api/admin/')){
         if(!process.env.TRACE_CONTROL_TOKEN||req.headers['x-trace-control-token']!==process.env.TRACE_CONTROL_TOKEN)return json(res,403,{error:'Management token required'});
@@ -179,7 +194,7 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
         }res.write(`data: ${JSON.stringify({choices:[],usage:{prompt_tokens:840,completion_tokens:72,total_tokens:912}})}\n\ndata: [DONE]\n\n`);return res.end();
       }
       if(p.startsWith('/api/'))return json(res,404,{error:'Not found'});
-      const assets={'/':'index.html','/app.js':'app.js','/style.css':'style.css'};if(!assets[p])return json(res,404,{error:'Not found'});
+      const assets={'/':'index.html','/app.js':'app.js','/lab.js':'lab.js','/style.css':'style.css'};if(!assets[p])return json(res,404,{error:'Not found'});
       res.writeHead(200,{'content-type':p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html; charset=utf-8','content-security-policy':"default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",'x-content-type-options':'nosniff'});res.end(await readFile(path.join(ROOT,'public',assets[p])));
     }catch(e){if(!res.headersSent)json(res,e.status||500,{error:e.message});else res.destroy();}
   });
