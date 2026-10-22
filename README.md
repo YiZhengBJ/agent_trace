@@ -7,9 +7,157 @@
 - **Rust `trace`**：CLI、配置/数据目录、后台进程、单实例锁、管理鉴权、登录常驻、旧数据导入。
 - **Tauri `trace-desktop`**：macOS 菜单栏、Ubuntu AppIndicator、Windows 系统托盘，按需打开 WebView；关闭窗口隐藏到托盘，退出托盘可保持网关运行。
 - **随包 Node runtime + gateway engine**：保留已经验证的原始流透传、脱敏、Session 归类、Token 图和完整前端。当前不是纯 Rust 网络代理；Rust 守护进程管理独立 Node 子进程，父进程消失时通过管道 EOF 停止引擎，避免孤儿进程。
-- **持久化**：沿用按请求 JSON 文件；所有管理入口只绑定 127.0.0.1，新增关闭服务/切换默认 Provider 等操作要求本机私有控制令牌。
+- **持久化**：按请求保存 JSON 清单，正文以共享压缩内容块存储；所有管理入口只绑定 127.0.0.1，新增关闭服务/切换默认 Provider 等操作要求本机私有控制令牌。
 
 发行目标为 macOS 13.5+、Ubuntu 22.04+、Windows 10/11 x64；本机成品为 macOS Apple Silicon。Node 24 的 macOS 基线参考 [Node 官方构建要求](https://github.com/nodejs/node/blob/v24.x/BUILDING.md)。
+
+## 安装
+
+从 [GitHub Actions → Cross-platform builds](https://github.com/YiZhengBJ/agent_trace/actions/workflows/build.yml) 打开最新一次成功构建，在 **Artifacts** 下载对应平台的统一包。下载的 Artifact 外层 ZIP 也要先解压，直到看到以下安装包；再解压统一包，进入包含 `install.sh` 或 `install.ps1` 的目录执行安装。当前不自动发布 GitHub Release；Artifact 保留 30 天。
+
+| 平台 | 统一包 | 桌面组件 |
+|---|---|---|
+| macOS Apple Silicon（13.5+） | `trace-gateway-macos-arm64-unified.tar.gz` | `.app`、`.dmg` |
+| Ubuntu x64（22.04+） | `trace-gateway-ubuntu-x64-unified.tar.gz` | `.deb`、`.AppImage` |
+| Windows x64（10/11） | `trace-gateway-windows-x64-unified.zip` | `.msi`、NSIS 安装程序 |
+
+**三个平台均不需要安装 Node.js、npm、Rust 或 Python。** 统一包内置运行时，推荐使用安装脚本，同时安装 CLI 和桌面组件。没有图形环境时选择 headless 模式即可。
+
+### macOS
+
+解压 `trace-gateway-macos-arm64-unified.tar.gz`，进入解压目录：
+
+```sh
+# 桌面 + CLI
+sh install.sh --desktop
+
+# 或仅安装 CLI / 后台网关
+sh install.sh --headless
+```
+
+桌面应用安装到 `~/Applications/Trace Gateway.app`，双击打开，或执行：
+
+```sh
+open "$HOME/Applications/Trace Gateway.app"
+```
+
+启动后在菜单栏右侧显示托盘图标，通过菜单打开控制台。当前包使用 ad-hoc 签名，未做 Apple Developer ID 签名和公证；若系统阻止运行，可在“系统设置 → 隐私与安全性”中按系统提示允许此次运行。
+
+CLI 安装到 `~/.local/share/trace-gateway-app`，命令链接为 `~/.local/bin/trace`。如果找不到 `trace`，在当前终端执行，并将同一行加入 `~/.zshrc`（使用 Bash 时加入 `~/.bashrc`）：
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+trace start
+trace status
+```
+
+### Ubuntu
+
+解压 `trace-gateway-ubuntu-x64-unified.tar.gz`，进入解压目录：
+
+```sh
+# 桌面环境：安装 CLI 和 deb，自动安装所需系统依赖（需要 sudo）
+sh install.sh --desktop
+
+# Ubuntu Server / SSH / 无图形环境：只安装 CLI，不安装图形依赖
+sh install.sh --headless
+```
+
+也可使用 `sh install.sh` 自动选择：存在 `DISPLAY` / `WAYLAND_DISPLAY` 时安装桌面版，否则仅安装 CLI。
+
+CLI 的安装目录与命令链接和 macOS 相同。必要时将下面的 PATH 配置加入 `~/.bashrc`，并在当前终端执行：
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+trace start
+trace status
+```
+
+桌面版从应用菜单启动 **Trace Gateway**。托盘使用 AppIndicator，需要桌面环境提供相应支持；无 GUI 时全部配置和管理功能可通过 CLI 完成。
+
+如需服务在登出后继续运行，可在安装后台服务后由管理员启用用户 lingering：
+
+```sh
+trace service install
+sudo loginctl enable-linger "$USER"
+trace service status
+```
+
+### Windows
+
+解压 `trace-gateway-windows-x64-unified.zip`，在包含 `install.ps1` 的文件夹打开 PowerShell：
+
+```powershell
+# CLI + 桌面安装向导
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+
+# 或仅安装 CLI / 后台网关
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Headless
+```
+
+CLI 安装到 `%LOCALAPPDATA%\TraceGatewayApp` 并加入用户 PATH。安装后重新打开 PowerShell，执行：
+
+```powershell
+trace start
+trace status
+```
+
+桌面版从开始菜单打开 **Trace Gateway**，图标位于任务栏右下方通知区域，可能收纳在隐藏图标中。若暂不重开终端，可使用完整路径：
+
+```powershell
+& "$env:LOCALAPPDATA\TraceGatewayApp\trace.exe" status
+```
+
+### 安装后：配置 Provider 与常驻运行
+
+三平台命令相同；桌面用户也可在控制台内添加 Provider：
+
+```sh
+trace start
+trace provider add --name DeepSeek --url https://api.deepseek.com --protocol openai --activate
+trace provider current
+trace provider url
+trace session list --limit 20
+```
+
+将 `trace provider url` 输出的地址填写到 Harness，API Key 仍填写上游 Provider 的 Key。默认端口为 4317，以命令实际输出为准。
+
+`trace start` 启动独立后台进程，关闭终端后仍运行。**不要把 `trace start` 放进 `.bashrc` / `.zshrc`；需要登录后自动常驻时安装系统启动项，一次即可：**
+
+```sh
+# 无 GUI 的后台模式
+trace service install
+trace service status
+
+# 如果需要登录后显示托盘，改用以下模式（与后台模式二选一）
+# trace service install --desktop
+```
+
+macOS 使用 launchd LaunchAgent；Ubuntu 使用 systemd 用户服务；Windows 使用当前用户登录计划任务。Windows 此模式在用户登录后运行，不是登录前启动的机器级系统服务。切换模式时先执行 `trace service uninstall`；关闭自启动也使用此命令。
+
+安装不会自动启用登录启动。升级前先从托盘退出并运行 `trace stop`；在原安装位置重跑安装脚本后，重新启动网关。数据目录独立于程序目录，升级保留配置和轨迹。若移动安装位置，应先卸载旧启动项，再在新位置重新安装启动项。
+
+### 卸载
+
+统一安装脚本会同时安装卸载命令；无需保留下载包，也不需要 Node.js 或 Python：
+
+```sh
+# macOS / Ubuntu：先从托盘退出桌面应用
+trace-uninstall
+# 可选：同时永久删除当前 TRACE_HOME（未指定时为默认目录）的配置和轨迹
+trace-uninstall --purge-data
+```
+
+```powershell
+# Windows：先从托盘退出桌面应用
+trace-uninstall
+# 可选：同时永久删除当前数据目录
+trace-uninstall -PurgeData
+```
+
+若 Unix 的 `~/.local/bin` 未加入 PATH，可直接运行 `~/.local/bin/trace-uninstall`。Windows PATH 尚未刷新时，在 PowerShell 使用 `& "$env:LOCALAPPDATA\TraceGatewayApp\trace-uninstall.cmd"`。
+
+卸载会停止当前数据目录的网关，移除本用户的开机启动项、CLI、内置运行时和安装脚本注册的桌面组件。Ubuntu 移除 deb 需要 sudo，不会自动删除其他系统共享依赖。Windows 桌面组件调用原生卸载向导；也可从系统“已安装的应用”单独卸载桌面部分，再执行 `trace-uninstall` 清理 CLI。默认保留 Provider 配置和轨迹，不删除其他自定义数据目录；使用过多个 `--home` 时应先逐个停止，数据由用户单独处理。卸载脚本遇到仍在运行的托盘或清理失败会报错并保留剩余文件，修正后可重试。仅直接运行 `.dmg`/`.deb`/`.msi` 等原生安装器、未运行统一安装脚本时，使用相应系统卸载方式。
 
 ## 快速使用（无需桌面）
 
@@ -61,7 +209,7 @@ trace --home /path/to/trace-data status
 
 默认使用系统本地应用数据目录下的 `trace-gateway`：macOS `~/Library/Application Support/trace-gateway`，Ubuntu `~/.local/share/trace-gateway`（遵循 XDG），Windows `%LOCALAPPDATA%\trace-gateway`。
 
-包含 `config.json`、私有 `control.token`、`data/providers.json`、`data/records/`、`gateway.log`。Unix 目录 0700/私有文件 0600；Windows 使用当前用户目录继承的 ACL。
+包含 `config.json`、私有 `control.token`、`data/providers.json`、`data/records/`（请求清单）、`data/record-chunks/`（共享正文）、`data/file-backups/`（启用时的文件备份）、`gateway.log`。Unix 目录 0700/私有文件 0600；Windows 使用当前用户目录继承的 ACL。
 
 旧版数据需要显式导入，不会随安装包分发：
 
@@ -209,53 +357,6 @@ python scripts/package.py --node /path/to/node --native-macos-bundle
 
 `.github/workflows/build.yml` 在推送代码到 `main`、向 `main` 提交 PR、推送 `v*` 标签时自动构建，也可手动触发。三个任务独立运行，先执行 Rust / 网关测试和 CLI 端到端测试，再打包桌面应用。不会上传用户数据。
 
-在 [GitHub Actions](https://github.com/YiZhengBJ/agent_trace/actions/workflows/build.yml) 选择 **Cross-platform builds → Run workflow → main → Run workflow**。完成后进入该次运行的 **Artifacts** 下载（保留 30 天）：
-
-每个平台只发布一个统一包，包含桌面安装程序、CLI、内置 Node.js 和安装脚本：
-
-| 平台 | 统一包 | 桌面组件 |
-|---|---|---|
-| Ubuntu x64 | `trace-gateway-ubuntu-x64-unified.tar.gz` | `.deb`、`.AppImage` |
-| macOS Apple Silicon | `trace-gateway-macos-arm64-unified.tar.gz` | `.app`、`.dmg` |
-| Windows x64 | `trace-gateway-windows-x64-unified.zip` | `.msi`、NSIS 安装程序 |
-
-解压并进入包目录后安装：
-
-```sh
-# macOS / Ubuntu：自动选择模式（Linux 无显示环境时仅安装 CLI）
-sh install.sh
-# 服务器明确指定无桌面安装，不安装图形依赖
-sh install.sh --headless
-# Linux 桌面安装会通过 sudo apt-get 安装 deb 及其系统依赖
-sh install.sh --desktop
-```
-
-Windows 在 PowerShell 中运行 `./install.ps1`；仅安装 CLI 用 `./install.ps1 -Headless`。若脚本被本机策略拦截，可使用 `powershell -ExecutionPolicy Bypass -File ./install.ps1`。桌面模式会打开原生安装向导。
-
-安装不需要 Node.js、Rust 或 Python，也不会下载 Node.js。CLI 的 `runtime` 随包安装；桌面程序也携带自己的运行时，允许两种入口独立运行。macOS 应用安装到 `~/Applications`，Unix CLI 安装到 `~/.local/share/trace-gateway-app` 并链接到 `~/.local/bin/trace`（未在 PATH 中时脚本会提示）；Windows CLI 安装到 `%LOCALAPPDATA%/TraceGatewayApp` 并加入用户 PATH，新终端生效。安装不会自动启用开机启动。已有网关请先 `trace stop` 再升级，轨迹数据目录独立于程序安装目录。
-
-### 卸载
-
-统一安装脚本会同时安装卸载命令；无需保留下载包，也不需要 Node.js 或 Python：
-
-```sh
-# macOS / Ubuntu：先从托盘退出桌面应用
-trace-uninstall
-# 可选：同时永久删除当前 TRACE_HOME（未指定时为默认目录）的配置和轨迹
-trace-uninstall --purge-data
-```
-
-```powershell
-# Windows：先从托盘退出桌面应用
-trace-uninstall
-# 可选：同时永久删除当前数据目录
-trace-uninstall -PurgeData
-```
-
-若 Unix 的 `~/.local/bin` 未加入 PATH，可直接运行 `~/.local/bin/trace-uninstall`。Windows PATH 尚未刷新时，在 PowerShell 使用 `& "$env:LOCALAPPDATA\TraceGatewayApp\trace-uninstall.cmd"`。
-
-卸载会停止当前数据目录的网关，移除本用户的开机启动项、CLI、内置运行时和安装脚本注册的桌面组件。Ubuntu 移除 deb 需要 sudo，不会自动删除其他系统共享依赖。Windows 桌面组件调用原生卸载向导；也可从系统“已安装的应用”单独卸载桌面部分，再执行 `trace-uninstall` 清理 CLI。默认保留 Provider 配置和轨迹，不删除其他自定义数据目录；使用过多个 `--home` 时应先逐个停止，数据由用户单独处理。卸载脚本遇到仍在运行的托盘或清理失败会报错并保留剩余文件，修正后可重试。仅直接运行 `.dmg`/`.deb`/`.msi` 等原生安装器、未运行统一安装脚本时，使用相应系统卸载方式。
-
 每个包内附带文件校验清单 `SHA256SUMS.txt`。缺失任一预期桌面安装程序会导致构建失败；此流程仅上传 Actions Artifacts，不自动发布 GitHub Release。
 
 本地 macOS 包使用 ad-hoc 签名，仅供预览与内部分发，不等于 Apple Developer ID 签名和公证。公开分发前需要配置开发者证书/公证；Windows 代码签名同理。Ubuntu 和 Windows 包必须在对应 runner 构建并验证，不将源码或 CI 配置冒充已生成的安装包。
@@ -263,3 +364,11 @@ trace-uninstall -PurgeData
 ### Lab 实验看板
 
 左侧栏 **Lab** 可绑定现有 `trace-lab` 配置文件的绝对路径，展示样本、重放、评估和策略及 JSON 详情。初版通过 CLI 执行实验，界面每 15 秒刷新。每类最多扫描 1,000 条，展示其中最新 100 条；超限或文件损坏会提示。配置绑定保存在网关数据目录 `lab-ui.json`；策略包尚未接入在线路由。
+
+### 大量历史记录与上下文存储
+
+网关启动只保留轨迹摘要与会话匹配索引，正文按需从磁盘还原。旧版 `data/records/*.json` 会逐条自动迁移；首次迁移期间健康检查可用，业务接口返回 503，待索引完成后重试。不要手工删除原始数据来绕过内存问题。
+
+请求正文按消息和 64 KiB 内容块去重并 gzip 存储。逐渐递增的上下文会复用已有块；分叉、压缩后的请求也能独立完整还原，不依赖上一轮文件。`data/records/` 保存清单，`data/record-chunks/` 保存共享正文，迁移数据时必须保留两者。转发给 provider 的请求不变，因此不减少上游 token 计费。
+
+界面每页最多 25 条请求，并按约 8 MiB 正文预算提前分页（单条大请求仍完整展示）。JSON 导出保持完整内容，网关和 CLI 均以流式方式导出。共享块暂不自动回收；不要直接删除块文件。

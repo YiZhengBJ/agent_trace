@@ -1,3 +1,4 @@
+import {readRecordFile} from '../gateway/record-store.mjs';
 import {pythonScript} from './python-exec.mjs';
 import {normalizeSource,toolName} from './source-protocol.mjs';
 import {readdir,mkdir,copyFile,chmod,stat} from 'node:fs/promises';
@@ -26,7 +27,7 @@ export async function prepare(c){
  const result=[];
  for(const [id,group]of [...groups].slice(0,c.maxSamples)){
   try{const existing=await jsonFile(path.join(c.outputDir,'samples',id+'.json'));result.push({id,eligible:existing.eligibility.eligible,issues:existing.eligibility.issues,existing:true});continue;}catch(e){if(e.code!=='ENOENT')throw e;}
-  const records=[];for(const meta of group)records.push(await jsonFile(meta.file));
+  const records=[];for(const meta of group)records.push(await readRecordFile(meta.file));
   const first=records[0],last=records.at(-1),issues=[],warnings=['partial_filesystem_capture'];
   const sourceRoot=c.sourceRoot||requestWorkingDirectory(first.request),query=userQuery(first.request);
 

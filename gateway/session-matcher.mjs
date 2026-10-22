@@ -48,6 +48,7 @@ export function projectRecord(record){
 }
 export class SessionMatcher{
  constructor(){this.latest=new Map();}
+ restore(p){const old=this.latest.get(p.sessionId);if(!old||old.startedAt<=p.startedAt)this.latest.set(p.sessionId,{...p,toolIds:new Set(p.toolIds)});}
  add(record){if(record.status!=='completed'||!record.response)return;const old=this.latest.get(record.sessionId);if(!old||old.startedAt<=record.startedAt){const projection=projectRecord(record);projection.explicit||=!!old?.explicit;this.latest.set(record.sessionId,projection);}}
  match(providerId,payload){
   const messages=requestMessages(payload),signatures=messages.map(digest),resultIds=new Set(messages.flatMap(m=>m.results.map(t=>t.id)).filter(Boolean));

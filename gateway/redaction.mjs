@@ -19,7 +19,7 @@ export function redact(value,secrets=new Set()){
   text=text.replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi,(_,scheme)=>scheme+' '+MASK);
   text=text.replace(/\bsk-(?:proj-|ant-[A-Za-z0-9]+-)?[A-Za-z0-9_-]{12,}/g,MASK);
   // Credentials in prose, shell snippets, URL query strings, and env assignments.
-  text=text.replace(/((?:[\w-]*api[_-]?key|authorization|proxy[_-]authorization|access[_-]token|refresh[_-]token|bearer[_-]token|client[_-]secret|secret[_-]key|password)["']?\s*(?::|=)\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s&,;}]+)/gi,'$1'+MASK);
+  text=text.replace(/(\b(?:[\w-]{0,128}api[_-]?key|authorization|proxy[_-]authorization|access[_-]token|refresh[_-]token|bearer[_-]token|client[_-]secret|secret[_-]key|password)["']?\s*(?::|=)\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s&,;}]+)/gi,'$1'+MASK);
   return text;
  };
  return visit(value);

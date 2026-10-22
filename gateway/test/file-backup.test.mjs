@@ -1,3 +1,4 @@
+import {readRecordFile} from '../record-store.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -24,7 +25,7 @@ async function setup(t,{enabled=true,config={},handler}={}){
   const app=await createGateway({port:0,dataDir,seed:false});
   const provider=await(await fetch(app.base+'/api/providers',{method:'POST',body:JSON.stringify({name:'test',url:`http://127.0.0.1:${upstream.address().port}`})})).json();
   t.after(async()=>{await app.close();upstream.closeAllConnections();await new Promise(r=>upstream.close(r));await rm(root,{recursive:true,force:true});});
-  return {root,workspace,dataDir,cfg,app,post:(body={},endpoint='chat/completions')=>fetch(app.base+`/p/${provider.id}/v1/`+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({metadata:{cwd:workspace},...body})}),records:async()=>{await app.flush();return Promise.all((await readdir(path.join(dataDir,'records'))).map(async f=>JSON.parse(await readFile(path.join(dataDir,'records',f),'utf8'))));}};
+  return {root,workspace,dataDir,cfg,app,post:(body={},endpoint='chat/completions')=>fetch(app.base+`/p/${provider.id}/v1/`+endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({metadata:{cwd:workspace},...body})}),records:async()=>{await app.flush();return Promise.all((await readdir(path.join(dataDir,'records'))).map(async f=>await readRecordFile(path.join(dataDir,'records',f))));}};
 }
 
 test('rules are extensible with exact names, regex and nested/array path fields',()=>{

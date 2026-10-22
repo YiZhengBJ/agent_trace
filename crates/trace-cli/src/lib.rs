@@ -180,6 +180,16 @@ impl Runtime {
         }
         Ok(v)
     }
+    pub fn export_session(&self, id: &str, output: &Path) -> Result<()> {
+        if !self.running() {bail!("Gateway is not running");}
+        let mut response=Client::builder().no_proxy().timeout(Duration::from_secs(600)).build()?
+            .get(format!("{}/api/sessions/{}?export=1",self.base(),urlencoding::encode(id))).send()?.error_for_status()?;
+        let mut options=fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(output).context("Cannot create export; output must not already exist")?;
+        if let Err(error)=response.copy_to(&mut file) {drop(file);let _=fs::remove_file(output);return Err(error.into());}
+        file.sync_all()?;Ok(())
+    }
     pub fn send(&self, method: &str, endpoint: &str, data: Value, admin: bool) -> Result<Value> {
         if !self.running() {
             bail!("Gateway is not running. Run trace start first.");
@@ -249,6 +259,7 @@ impl Runtime {
                 "server.mjs",
                 include_bytes!("../../../gateway/server.mjs").as_slice(),
             ),
+            ("record-store.mjs", include_bytes!("../../../gateway/record-store.mjs").as_slice()),
             (
                 "redaction.mjs",
                 include_bytes!("../../../gateway/redaction.mjs").as_slice(),
@@ -555,6 +566,14 @@ console.log(JSON.stringify({enabled:config.enabled,configPath:store.configPath,r
                 private_write(&dest.join(name), &fs::read(source.join(name))?)?;
             }
         }
+        fn copy_chunks(source: &Path, dest: &Path) -> Result<()> {
+            fs::create_dir_all(dest)?;
+            for entry in fs::read_dir(source)? { let entry=entry?; let kind=entry.file_type()?;
+                if kind.is_dir() {copy_chunks(&entry.path(), &dest.join(entry.file_name()))?;}
+                else if kind.is_file() {private_write(&dest.join(entry.file_name()), &fs::read(entry.path())?)?;}
+            } Ok(())
+        }
+        if source.join("record-chunks").is_dir() {copy_chunks(&source.join("record-chunks"), &dest.join("record-chunks"))?;}
         let mut count = 0;
         for entry in fs::read_dir(source.join("records"))? {
             let entry = entry?;

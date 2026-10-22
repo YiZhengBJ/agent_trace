@@ -322,13 +322,6 @@ fn run() -> Result<()> {
                 runtime.get(&format!("/api/sessions/{}", urlencoding::encode(&id)))?
             }
             Session::Export { id, output } => {
-                let data = runtime.get(&format!(
-                    "/api/sessions/{}?export=1",
-                    urlencoding::encode(&id)
-                ))?;
-                if data.as_array().is_none_or(|a| a.is_empty()) {
-                    bail!("Session not found or empty");
-                }
                 if output.exists() {
                     bail!(
                         "Output already exists; refusing to overwrite {}",
@@ -340,7 +333,7 @@ fn run() -> Result<()> {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                trace_runtime::private_write(&output, &serde_json::to_vec_pretty(&data)?)?;
+                runtime.export_session(&id, &output)?;
                 json!({"exported":output,"redacted":true})
             }
         },

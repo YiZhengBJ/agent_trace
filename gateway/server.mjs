@@ -1,6 +1,7 @@
+import {createRecordStore,recordSummary} from './record-store.mjs';
 import {createLabView} from './lab-view.mjs';
 import http from 'node:http';
-import {SessionMatcher} from './session-matcher.mjs';
+import {SessionMatcher,projectRecord} from './session-matcher.mjs';
 import {redact,captureSecrets} from './redaction.mjs';
 import {createFileBackup,QueryTracker} from './file-backup.mjs';
 import {forwardWithBackups} from './tool-call-capture.mjs';
@@ -26,7 +27,7 @@ const userText = payload => {
   const first=Array.isArray(messages)?messages.find(x=>x.role==='user'):null;
   return typeof first?.content==='string'?first.content: first?.content?.filter(x=>x.type==='text'||x.type==='input_text').map(x=>x.text).join(' ') || 'Untitled session';
 };
-export async function createGateway({port=Number(process.env.PORT||4317),dataDir=process.env.DATA_DIR||path.join(ROOT,'data'),seed=process.env.TRACE_SEED_DEMO==='1'}={}) {
+export async function createGateway({port=Number(process.env.PORT||4317),dataDir=process.env.DATA_DIR||path.join(ROOT,'data'),backgroundLoad=false,seed=process.env.TRACE_SEED_DEMO==='1'}={}) {
   await mkdir(path.join(dataDir,'records'),{recursive:true,mode:0o700});
   const labView=createLabView(dataDir);
   const fileBackup=await createFileBackup({dataDir});
@@ -37,21 +38,42 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
   let pending=Promise.resolve(), diskError=null, active=0;
   function queue(fn){pending=pending.then(fn).catch(e=>{diskError=e.message;console.error('Recording error:',e.message);});return pending;}
   function saveProviders(){const snapshot=JSON.stringify(providers,null,2);return queue(async()=>{const p=path.join(dataDir,'providers.json');await writeFile(p+'.tmp',snapshot,{mode:0o600});await rename(p+'.tmp',p);});}
-  async function persist(record) {
-    const safe=redact(record,knownSecrets);records.set(record.id,safe);sessionMatcher.add(safe);
-    const snapshot=JSON.stringify(safe);
-    await queue(()=>writeFile(path.join(dataDir,'records',record.id+'.json'),snapshot,{mode:0o600}));
-  }
-  for(const f of await readdir(path.join(dataDir,'records'))){if(f.endsWith('.json')){try{const original=await readFile(path.join(dataDir,'records',f),'utf8');const r=redact(JSON.parse(original),knownSecrets);records.set(r.id,r);if(JSON.stringify(r)!==original){const dest=path.join(dataDir,'records',f);await writeFile(dest+'.tmp',JSON.stringify(r),{mode:0o600});await rename(dest+'.tmp',dest);}}catch(e){diskError=`Unreadable record: ${f}`;}}}
+  const store=await createRecordStore(dataDir);
   const queryTracker=new QueryTracker();
-  const chronologicalRecords=[...records.values()].sort((a,b)=>a.startedAt.localeCompare(b.startedAt));
-  for(const r of chronologicalRecords){
-    queryTracker.assign(r);
-    sessionMatcher.add(r);
+  function projection(record){const p=projectRecord(record);return {...p,toolIds:[...p.toolIds]};}
+  function indexResponse(r){
     const data=parse(Buffer.from(r.response||''));if(data?.id)responseSessions.set(`${r.providerId}:${data.id}`,r.sessionId);
-    if(r.stream)for(const line of (r.response||'').split('\n'))if(line.startsWith('data: ')){const event=parse(Buffer.from(line.slice(6)));if(event?.response?.id)responseSessions.set(`${r.providerId}:${event.response.id}`,r.sessionId);}
+    r.responseIds=data?.id?[data.id]:[];
+    if(r.stream)for(const line of (r.response||'').split('\n'))if(line.startsWith('data: ')){const event=parse(Buffer.from(line.slice(6)));if(event?.response?.id){responseSessions.set(`${r.providerId}:${event.response.id}`,r.sessionId);r.responseIds.push(event.response.id);}}
   }
-  fileBackup.restore(chronologicalRecords);
+  async function persist(record) {
+    const safe=redact(record,knownSecrets);
+    records.set(record.id,recordSummary(safe));sessionMatcher.add(safe);
+    const root=queryTracker.starts.get(record.queryId);if(root&&record.id===record.queryId)root.status=record.status;
+    await queue(async()=>{indexResponse(safe);const manifest=await store.put(safe,projection(safe));records.set(record.id,recordSummary(manifest));});
+  }
+  // Migrate one record at a time; subsequent startups only read small manifests.
+  let ready=false;
+  const initialize=async()=>{
+  const manifests=[];
+  for await(const name of store.entries()){
+    try{let r=await store.legacy(name);
+      if(r._traceStorage!==2){r=redact(r,knownSecrets);queryTracker.assign(r);indexResponse(r);r=await store.put(r,projection(r));}
+      for(const id of r.responseIds||[])responseSessions.set(`${r.providerId}:${id}`,r.sessionId);
+      records.set(r.id,recordSummary(r));
+      if(r.status==='completed'&&r._projection)sessionMatcher.restore(r._projection);
+      manifests.push({summary:recordSummary(r),fileBackup:r.fileBackup});
+    }catch(e){diskError=`Unreadable record: ${name}: ${e.message}`;}
+  }
+  manifests.sort((a,b)=>a.summary.startedAt.localeCompare(b.summary.startedAt));
+  for(const {summary:r,fileBackup:backup} of manifests){
+    queryTracker.assign(r);
+    fileBackup.restore([{...r,fileBackup:backup}]);
+  }
+  manifests.length=0;ready=true;
+  };
+  const initialization=initialize();
+  if(!backgroundLoad)await initialization;
   const agents={http:new http.Agent({keepAlive:true,maxSockets:256}),https:new https.Agent({keepAlive:true,maxSockets:256})};
   let base='';
   function sessionFor(req,p,payload){
@@ -76,7 +98,7 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
     headers['accept-encoding']='identity';headers['content-length']=bytes.length;
     const record={id:randomUUID(),sessionId:session.id,sessionMethod:session.method,sessionEvidence:session.evidence||null,providerId:p.id,providerName:p.name,protocol:suffix.includes('messages')?'anthropic':suffix.includes('responses')?'responses':'openai',path:suffix,model:payload?.model||'unknown',title:userText(payload).slice(0,160),startedAt:new Date().toISOString(),status:'streaming',httpStatus:null,stream:!!payload?.stream,fileBackupEnabled:backupConfig.enabled,request:payload||bytes.toString(),response:'',bytes:0,ttftMs:null,durationMs:0,truncated:false,demo:!!p.demo};
     queryTracker.assign(record);
-    records.set(record.id,redact(record,knownSecrets));active++;
+    records.set(record.id,recordSummary(record));active++;
     await new Promise(resolve=>{
       let done=false,upstream,parts=[],size=0,guarded=false;
       const finish=(error)=>{
@@ -132,6 +154,7 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
       if(!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host))return json(res,403,{error:'Localhost Host required'});
       if(req.headers.origin&&![base,base.replace('127.0.0.1','localhost')].includes(req.headers.origin))return json(res,403,{error:'Cross-origin requests are disabled'});
       const u=new URL(req.url,base),p=u.pathname;
+      if(!ready&&((p!=='/api/health'&&p.startsWith('/api/'))||p.startsWith('/p/')))return json(res,503,{error:'Historical records are being indexed; retry shortly',initializing:true});
       if(p.startsWith('/p/')){
         const match=p.match(/^\/p\/([^/]+)\/(.+)$/),provider=providers.find(x=>x.id===match?.[1]);
         if(!provider)return json(res,404,{error:'Provider not found'});
@@ -163,7 +186,7 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
         const parts=p.slice('/api/lab/items/'.length).split('/');
         try{if(parts.length!==2)throw new Error('Invalid artifact');return json(res,200,await labView.detail(...parts));}catch(e){return json(res,400,{error:e.message});}
       }
-      if(p==='/api/health')return json(res,200,{app:'trace-gateway',version:'0.2.0',instanceId:process.env.TRACE_INSTANCE_ID||null});
+      if(p==='/api/health')return json(res,200,{ready,app:'trace-gateway',version:'0.2.0',instanceId:process.env.TRACE_INSTANCE_ID||null});
       if(p.startsWith('/api/admin/')){
         if(!process.env.TRACE_CONTROL_TOKEN||req.headers['x-trace-control-token']!==process.env.TRACE_CONTROL_TOKEN)return json(res,403,{error:'Management token required'});
         if(p==='/api/admin/shutdown'&&req.method==='POST'){json(res,200,{ok:true});setImmediate(()=>process.emit('SIGTERM'));return;}
@@ -173,9 +196,25 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
       }
       if(p==='/api/state')return json(res,200,{providers:providers.map(x=>({...x,localUrl:`${base}/p/${x.id}`,openaiUrl:`${base}/p/${x.id}/v1`})),defaultProviderId:providers.some(x=>x.id===settings.defaultProviderId)?settings.defaultProviderId:providers.find(x=>!x.demo)?.id||null,sessions:redact(sessions(),knownSecrets),active,recordingError:diskError,base});
       if(p.startsWith('/api/sessions/')){
+        await pending;
         const id=decodeURIComponent(p.slice('/api/sessions/'.length));const list=[...records.values()].filter(r=>r.sessionId===id).sort((a,b)=>a.startedAt.localeCompare(b.startedAt));
-        if(u.searchParams.has('export')){res.setHeader('content-disposition','attachment; filename="session.json"');return json(res,200,redact(list,knownSecrets));}
-        return json(res,200,redact(list,knownSecrets));
+        if(u.searchParams.has('export')&&!list.length)return json(res,404,{error:'Session not found or empty'});
+        const paged=u.searchParams.has('limit')&&!u.searchParams.has('export');
+        const offset=paged?Math.max(0,Number(u.searchParams.get('offset'))||0):0;
+        const limit=paged?Math.min(50,Math.max(1,Number(u.searchParams.get('limit'))||25)):list.length;
+        if(u.searchParams.has('export'))res.setHeader('content-disposition','attachment; filename="session.json"');
+        res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});
+        res.write(paged?'{"records":[':'[');
+        // Bounded page bytes, and streaming exports: never materialize a whole session.
+        let used=0,count=0;
+        if(paged){/* opening envelope is written below */}
+        for(const r of list.slice(offset,offset+limit)){
+          if(paged&&count&&used+(r.bodyBytes||0)>8*1024*1024)break;
+          let full;try{full=await store.get(r.id);}catch(e){if(r.status==='streaming')full={...r,request:null,response:''};else throw e;}
+          const chunk=JSON.stringify(redact(full,knownSecrets));used+=Buffer.byteLength(chunk);
+          if(!res.write((count?',':'')+chunk))await once(res,'drain');count++;
+        }
+        return res.end(paged?`],"total":${list.length},"offset":${offset},"nextOffset":${offset+count<list.length?offset+count:'null'}}`:']');
       }
       if(p==='/api/providers'&&req.method==='POST'){
         const data=parse(await body(req));if(!data?.name?.trim())return json(res,400,{error:'Provider name required'});
@@ -214,14 +253,14 @@ export async function createGateway({port=Number(process.env.PORT||4317),dataDir
   }
   server.listen(port,'127.0.0.1');await once(server,'listening');base=`http://127.0.0.1:${server.address().port}`;
   if(seed&&records.size===0)await demo();
-  return {server,base,flush:()=>pending,close:async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));await pending;agents.http.destroy();agents.https.destroy();}};
+  return {server,base,flush:async()=>{await initialization;await pending;},close:async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));await initialization;await pending;agents.http.destroy();agents.https.destroy();}};
 }
 // Canonicalize both sides: Windows 8.3 paths and junctions can spell the
 // entry script differently from import.meta.url. A false negative exits 0
 // without ever starting the listener, including when launched by the Rust CLI.
 const canonicalPath=async value=>realpath(value).catch(()=>path.resolve(value));
 if(process.argv[1]&&(await canonicalPath(process.argv[1]))===(await canonicalPath(fileURLToPath(import.meta.url)))){
- const app=await createGateway();console.log(`Trace Gateway running at ${app.base}`);
+ const app=await createGateway({backgroundLoad:true});console.log(`Trace Gateway running at ${app.base}`);
  let closing=false;const shutdown=()=>{if(closing)return;closing=true;app.close().then(()=>process.exit());};
  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,shutdown);
  if(process.env.TRACE_PARENT_WATCH==='1'){process.stdin.resume();process.stdin.on('end',shutdown);}

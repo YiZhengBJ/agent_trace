@@ -73,16 +73,17 @@ export class QueryTracker{
   assign(record){
     const messages=requestMessages(record.request);let lastUser=-1;
     for(let i=0;i<messages.length;i++)if(messages[i].role==='user'&&!messages[i].results.length)lastUser=i;
-    const fingerprint=lastUser<0?null:createHash('sha256').update(JSON.stringify(messages.slice(0,lastUser+1).filter(m=>!['system','developer'].includes(m.role)))).digest('hex');
+    const fingerprint=record.queryFingerprint||(lastUser<0?null:createHash('sha256').update(JSON.stringify(messages.slice(0,lastUser+1).filter(m=>!['system','developer'].includes(m.role)))).digest('hex'));
+    record.queryFingerprint=fingerprint;
     const key=fingerprint?record.sessionId+':'+fingerprint:null;
     const signal=[...messages].reverse().find(m=>m.role==='user'||m.role==='tool');
     const userTriggered=signal?.role==='user'&&!signal.results.length;
     const prior=key?this.known.get(key):this.current.get(record.sessionId);
-    const previous=this.starts.get(prior);
+    const entry=this.starts.get(prior),previous=entry?.ref?.deref()||entry;
     // A completed standalone user request followed by the same prompt is a new
     // query; retries of a failed/in-flight root retain its original snapshot.
     record.queryId=record.queryId||((userTriggered&&previous?.status==='completed')?record.id:prior)||record.id;
-    if(!this.starts.has(record.queryId))this.starts.set(record.queryId,record);
+    if(!this.starts.has(record.queryId))this.starts.set(record.queryId,{status:record.status,ref:new WeakRef(record)});
     if(key)this.known.set(key,record.queryId);
     this.current.set(record.sessionId,record.queryId);
     return record.queryId;

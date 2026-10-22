@@ -315,25 +315,27 @@ function renderDetail(){const r=requests.find(x=>x.id===selectedRequest)||reques
  $('#detail').innerHTML=`<h3>请求详情 <span class="badge">${r.httpStatus||'LIVE'}</span></h3><div class="section-label">MODEL & PROVIDER</div>${kv('模型',r.model,'purple')}${kv('Provider',r.providerName)}${kv('协议',r.protocol)}${kv('传输',r.stream?'SSE streaming':'JSON')}<div class="section-label">PERFORMANCE</div>${kv('首字节延迟',r.ttftMs===null?'—':ms(r.ttftMs))}${kv('总耗时',ms(r.durationMs))}${kv('Input tokens',u.input==null?'—':fmt(u.input))}${kv('Cached input',u.cached==null?'—':fmt(u.cached))}${kv('Output tokens',u.output==null?'—':fmt(u.output))}${kv('响应大小',(r.bytes/1024).toFixed(2)+' KB')}<div class="section-label">SESSION GROUPING</div>${kv('归类方式',r.sessionMethod==='explicit'?'显式 Session ID':r.sessionMethod==='response-chain'?'Responses 链接':({'tool-call-link':'工具调用 ID 续接','context-continuation':'上下文与响应续接','context-overlap':'上下文尾部重合','ambiguous-context':'候选冲突，新建会话','new-session':'新会话，未发现续接'}[r.sessionMethod]||'旧版对话启发式'))}<div class="mini-code">${esc(r.sessionId)}</div>${r.sessionEvidence?`<div class="section-label">关联依据</div><pre class="raw">${esc(JSON.stringify(r.sessionEvidence,null,2))}</pre>`:''}${r.truncated?'<p class="hint">响应超过 32 MiB，录制已截断；转发不受此限制。</p>':''}${r.error?`<p class="hint">${esc(r.error)}</p>`:''}<div class="detail-tabs"><button data-raw="request" class="${rawTab==='request'?'selected':''}">Request</button><button data-raw="response" class="${rawTab==='response'?'selected':''}">Response</button></div><pre class="raw">${esc(rawTab==='request'?JSON.stringify(r.request,null,2):r.response)}</pre>`;
  $$('[data-raw]').forEach(b=>b.onclick=()=>{rawTab=b.dataset.raw;renderDetail();});
 }
+let sessionPage=0,pageSession=null,pageHistory=[],lastPageStamp='';
 async function loadSession(){
  if(!selected){$('#trajectory-head').innerHTML='<h2>开始记录你的第一个 Agent Session</h2>';$('#trajectory').innerHTML='<div class="empty">添加 Provider 后，将本地地址填入 Harness。<br>或者点击「＋ 演示」体验完整录制链路。</div>';requests=[];renderDetail();return;}
- const id=selected,list=await api('/api/sessions/'+encodeURIComponent(id));if(id!==selected)return;
+ const id=selected;if(pageSession!==id){sessionPage=0;pageHistory=[];pageSession=id;}const stamp=JSON.stringify([id,sessionPage,state.sessions.find(s=>s.id===id)]);if(lastSignature&&stamp===lastPageStamp)return;const page=await api('/api/sessions/'+encodeURIComponent(id)+'?limit=25&offset='+sessionPage),list=page.records;if(id!==selected)return;lastPageStamp=stamp;
  const signature=JSON.stringify(list.map(r=>[r.id,r.status,r.bytes,r.durationMs,r.fileBackupEnabled,r.fileBackup?.status,r.fileBackup?.files?.length]));if(signature===lastSignature)return;lastSignature=signature;hideBackupTooltip();requests=list;toolOperationIndex=indexToolOperations(list);
  const s=state.sessions.find(s=>s.id===id);if(!s)return;
  $('#trajectory-head').innerHTML=`<div class="trace-label">SESSION TRAJECTORY<button id="export">↓ 导出 JSON</button></div><h2>${esc(s.title)}</h2><div class="trace-sub"><span class="ok">● ${s.status==='streaming'?'录制中':s.errors?'包含异常':'已完成'}</span><span>${esc(s.providerName)}</span><span>${s.count} 次请求</span><span>${esc(date(s.startedAt))}</span></div><div id="timeline"></div>`;
  $('#export').onclick=()=>{const a=document.createElement('a');a.href='/api/sessions/'+encodeURIComponent(id)+'?export=1';a.download='session.json';a.click();};
  let html=s.demo?'<div class="demo-notice">◈ 演示会话 · 由本地模拟上游生成，经过实际代理链路，不代表真实模型输出。</div>':'';
+ html+=`<div class="trajectory-bulk-control"><button id="page-prev" ${sessionPage?'':'disabled'}>上一页</button><span>请求 ${sessionPage+1}–${sessionPage+list.length} / ${page.total}</span><button id="page-next" ${page.nextOffset===null?'disabled':''}>下一页</button></div>`;
  html+='<div class="trajectory-bulk-control"><button id="toggle-all" aria-expanded="false">+ 全部展开</button></div>';
  for(const[rindex,r]of list.entries()){
    const queryEnd=rindex===list.length-1||requestTrigger(list[rindex+1])==='user';
-   const number=String(rindex+1).padStart(2,'0');
+   const number=String(sessionPage+rindex+1).padStart(2,'0');
    eventRequestId=r.id+':request';eventIndex=0;
    const requestBody=requestEvents(r,list[rindex-1]);
    html+=exchangeGroup(r,'request',number,requestBody);
    eventRequestId=r.id+':response';eventIndex=0;
    html+=exchangeGroup(r,'response',number,responseEvents(r)).replace('exchange-group response ',`exchange-group response ${queryEnd?'query-end':'round-end'} `);
  }
- $('#trajectory').innerHTML=html;updateBulkToggle();updateDisclosureButtons();$('#toggle-all').onclick=()=>setAllEvents($('#toggle-all').dataset.expanded!=='true');$$('[data-request]').forEach(b=>b.onclick=()=>{selectRequest(b.dataset.request,b.dataset.direction);toast('已切换'+(rawTab==='request'?'请求':'响应')+'详情');});renderDetail();
+ $('#trajectory').innerHTML=html;$('#page-prev').onclick=()=>{sessionPage=pageHistory.pop()??0;lastSignature='';void loadSession();};$('#page-next').onclick=()=>{pageHistory.push(sessionPage);sessionPage=page.nextOffset;lastSignature='';void loadSession();};updateBulkToggle();updateDisclosureButtons();$('#toggle-all').onclick=()=>setAllEvents($('#toggle-all').dataset.expanded!=='true');$$('[data-request]').forEach(b=>b.onclick=()=>{selectRequest(b.dataset.request,b.dataset.direction);toast('已切换'+(rawTab==='request'?'请求':'响应')+'详情');});renderDetail();
  mountTimeline($('#timeline'),$('#trajectory'),list,requestTrigger);
 }
 function renderProviders(){ $('#providers').innerHTML=state.providers.map(p=>`<article class="provider-card"><span class="badge">${p.demo?'LOCAL DEMO':esc(p.protocol.toUpperCase())}</span><h2>${esc(p.name)} ${p.id===state.defaultProviderId?'<span class="badge">默认 Provider</span>':''}</h2><p>${esc(p.url)}</p><div class="section-label">LOCAL BASE URL</div><code>${esc(p.openaiUrl)}</code><button class="secondary" data-copy="${esc(p.openaiUrl)}">复制 OpenAI 地址</button> <button class="secondary" data-copy="${esc(p.localUrl)}">复制 Anthropic 地址</button></article>`).join('')||'<div class="empty">添加你的第一个 Provider。</div>';$$('[data-copy]').forEach(b=>b.onclick=()=>copy(b.dataset.copy));}
